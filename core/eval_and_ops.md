@@ -121,11 +121,14 @@ volumes:
 
 ---
 
-## 4. CI/CD Пайплайн (GitHub Actions)
+## 4. CI/CD Пайплайн (GitHub Actions & Protected Box Distribution)
 
 Workflow-файл `.github/workflows/ci.yml`:
-1. **Lint & Static Check**: `ruff check .`, `mypy src`.
-2. **Unit & Integration Tests**: `pytest tests/ -v`.
+1. **Lint & Static Check**: `ruff check .` и `mypy src` (строгая проверка без проглатывания ошибок).
+2. **Unit & Integration Tests**: `pytest tests/ -v` (проверка изоляции тенантов, валидации токенов Ed25519, RRF и S3 коннектора).
 3. **Evaluation Gate**: Запуск `python -m tests.eval_ragas` — проверка, что метрики качества на `golden_dataset.json` не деградировали ниже допустимого порога SLO.
-4. **Secrets**: Управление конфиденциальными переменными (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `GROQ_API_KEY`, `TELEGRAM_BOT_TOKEN`) строго через **GitHub Actions Secrets**.
-```
+4. **On-Premise Core Protection & Image Release** (при тегах `v*`):
+   - Компиляция модулей ядра (`rag_core/licensing/`, `rag_core/retrieval/`) в `.so` через Cython/PyArmor.
+   - Сборка закрытого Docker-образа `rag-core:enterprise-vX.Y`.
+   - Публикация в приватный GitHub Container Registry (`ghcr.io/your-org/rag-core`).
+5. **Secrets**: Управление конфиденциальными переменными (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `LICENSE_PRIVATE_KEY`, `GROQ_API_KEY`, `TELEGRAM_BOT_TOKEN`) строго через **GitHub Actions Secrets**.

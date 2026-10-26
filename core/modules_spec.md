@@ -28,9 +28,46 @@ class IntentType(str, Enum):
     CHIT_CHAT = "chit_chat"
     META_COMMAND = "meta_command"
 
+class DeploymentMode(str, Enum):
+    SAAS_CLOUD = "saas_cloud"
+    ON_PREMISE_BOX = "on_premise_box"
+
+# --- Модели лицензирования и тенантов ---
+class LicensePayload(BaseModel):
+    license_id: str
+    client_id: str
+    plan: str = "enterprise_box"
+    mode: str = "online_subscription"          # 'online_subscription' | 'airgap_enterprise'
+    issued_at: datetime
+    expires_at: Optional[datetime] = None      # None для бессрочных On-Premise лицензий
+    max_documents: int = 1000
+    max_users: int = 10
+    hardware_id: Optional[str] = None
+    telemetry_opt_out: bool = True
+    features: List[str] = Field(default_factory=lambda: ["hybrid_search", "s3_connector", "flashrank_rerank"])
+
+class TenantContext(BaseModel):
+    tenant_id: UUID
+    slug: str
+    name: str
+    is_active: bool = True
+    storage_type: str = "s3"
+    s3_bucket: Optional[str] = None
+    s3_prefix: Optional[str] = None
+    allowed_origins: List[str] = Field(default_factory=list) # Строгий список доменов без wildcard
+
+class WebWidgetSessionRequest(BaseModel):
+    slug: str
+
+class WebWidgetSessionResponse(BaseModel):
+    session_token: str
+    tenant_id: UUID
+    expires_in: int = 3600
+
 # --- Модели пользователей и контекста ---
 class UserContext(BaseModel):
     user_id: UUID                      # Обязательный ID из таблицы users (без fallback uuid4)
+    tenant_id: UUID                    # ID привязанного тенанта
     channel_user_id: str
     channel: str = "telegram"
     access_level: AccessLevel = AccessLevel.PUBLIC
@@ -38,7 +75,8 @@ class UserContext(BaseModel):
 # --- Модели документов и чанков ---
 class RawDocument(BaseModel):
     id: UUID = Field(default_factory=uuid4)
-    source_type: str = "local_folder"
+    tenant_id: UUID
+    source_type: str = "s3"
     source_uri: str
     content_hash: str
     language: str = "ru"
@@ -48,6 +86,7 @@ class RawDocument(BaseModel):
 
 class ParentChunk(BaseModel):
     id: UUID = Field(default_factory=uuid4)
+    tenant_id: UUID
     document_id: UUID
     content: str
     token_count: int
@@ -56,10 +95,12 @@ class ParentChunk(BaseModel):
 
 class ChildChunk(BaseModel):
     id: UUID = Field(default_factory=uuid4)
+    tenant_id: UUID
     parent_id: UUID
     content: str
     token_count: int
     chunk_index: int
+    access_level: AccessLevel = AccessLevel.PUBLIC
     dense_embedding: Optional[List[float]] = None
     sparse_embedding: Optional[Dict[int, float]] = None
     embedding_model_id: str = "BAAI/bge-m3"
@@ -93,10 +134,23 @@ class RAGResponse(BaseModel):
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
+    # Deployment & Licensing
+    deployment_mode: DeploymentMode = DeploymentMode.SAAS_CLOUD
+    license_key: Optional[str] = None
+    license_public_key: Optional[str] = None
+    license_server_url: Optional[str] = "https://license.your-rag-domain.com"
+
     # Supabase / Postgres
     supabase_url: Optional[str] = None
     supabase_service_role_key: Optional[str] = None
     postgres_dsn: str = "postgresql://postgres:postgrespassword@localhost:5432/postgres"
+
+    # S3 Object Storage (Cloudflare R2 / MinIO / Selectel / AWS)
+    s3_endpoint_url: Optional[str] = None
+    s3_access_key_id: Optional[str] = None
+    s3_secret_access_key: Optional[str] = None
+    s3_default_bucket: str = "enterprise-rag-documents"
+    s3_region_name: str = "auto"
 
     # LLM & Embedder
     groq_api_key: Optional[str] = None
@@ -128,6 +182,34 @@ class Settings(BaseSettings):
 
 ```python
 from abc import ABC, abstractmethod
+
+# --- 2.0. Licensing & Multi-Tenancy Interfaces ---
+class BaseLicenseValidator(ABC):
+    @abstractmethod
+    def validate_token(self, token: str) -> LicensePayload:
+        """Офлайн валидация цифровой подписи Ed25519 и срока действия токена."""
+        pass
+
+    @abstractmethod
+    async def verify_heartbeat(self, license_payload: LicensePayload) -> bool:
+        """Онлайн пинг на мастер-сервер лицензий для проверки отсутствия отзыва (с grace-периодом 72ч)."""
+        pass
+
+    @abstractmethod
+    async def enforce_quota(self, tenant_id: UUID, metric: Literal["documents", "users", "requests"]) -> None:
+        """Проверка квот лицензии (max_documents, max_users) с выбросом QuotaExceededError при превышении."""
+        pass
+
+class BaseTenantResolver(ABC):
+    @abstractmethod
+    async def resolve_tenant(self, identifier: str) -> TenantContext:
+        """Определение контекста тенанта по API-ключу, slug или домену виджета."""
+        pass
+
+    @abstractmethod
+    async def enforce_quota(self, tenant_id: UUID, metric: Literal["documents", "users", "requests"]) -> None:
+        """Проверка текущего потребления ресурсов тенантом против установленных лимитов."""
+        pass
 
 # --- 2.1. Embedder Interface ---
 class BaseEmbedder(ABC):
@@ -162,9 +244,9 @@ class BaseIntentRouter(ABC):
 class BaseRetriever(ABC):
     @abstractmethod
     async def retrieve(
-        self, query: str, user_access_level: int = 0, top_k: int = 30
+        self, query: str, tenant_id: UUID, user_access_level: int = 0, top_k: int = 30
     ) -> List[RetrievalCandidate]:
-        """Гибридный поиск Dense + Sparse с RRF слиянием на уровне базы данных."""
+        """Гибридный поиск Dense + Sparse с RRF слиянием и изоляцией по tenant_id."""
         pass
 
 class BaseReranker(ABC):
@@ -252,16 +334,18 @@ broker = AioPikaBroker()
 
 @broker.task
 async def process_document_task(
+    tenant_id: UUID,
     document_uri: str,
     content_hash: str,
     access_level: int = 0
 ) -> None:
     """
-    1. Проверка наличия document_hash в Supabase (пропуск если уже indexed).
-    2. Парсинг структуры (Docling / layout parser).
-    3. Token-aware нарезка на Parent и Child чанки.
-    4. Генерация батчей BGE-M3 эмбеддингов (batch_size=32).
-    5. Транзакционная запись в БД и перевод статуса в 'indexed'.
+    1. Проверка активной квоты тенанта (enforce_quota(tenant_id, 'documents')).
+    2. Проверка наличия content_hash в таблице documents для данного tenant_id (идемпотентность).
+    3. Парсинг структуры (Docling / layout parser).
+    4. Token-aware нарезка на Parent и Child чанки с установкой tenant_id и access_level.
+    5. Генерация батчей BGE-M3 эмбеддингов (batch_size=32).
+    6. Транзакционная запись в БД и перевод статуса в 'indexed'.
     """
     pass
 ```

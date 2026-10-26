@@ -7,10 +7,11 @@
 ## 🗂️ Навигация и структура файлов ядра
 
 1. [**`soul.md`**](./soul.md) — Миссия ассистента, системные правила, стиль коммуникации, изоляция контекста от Indirect Prompt Injection (`<untrusted_doc_context>`), шаблоны промптов генерации, Query Condensation, Intent Router и LLM-as-a-Judge.
-2. [**`architecture.md`**](./architecture.md) — Детальная схема слоёв системы, жизненный цикл запроса (Query Flow), конвейер фонового инжеста данных (Ingestion Flow с debounce) и матрица отказоустойчивости (Resilience Matrix).
-3. [**`storage_schema.md`**](./storage_schema.md) — DDL миграция PostgreSQL / Supabase, схемы таблиц (`documents`, `parent_chunks`, `child_chunks`, `conversations`, `messages`), HNSW и `sparsevec` индексы, SQL-процедура гибридного поиска `hybrid_search_rrf` и RLS политики безопасности.
-4. [**`modules_spec.md`**](./modules_spec.md) — Строгие Python-контракты и Pydantic V2 схемы (`RawDocument`, `ParentChunk`, `ChildChunk`, `RetrievalCandidate`, `RAGResponse`), базовые абстракции интерфейсов (`BaseChannel`, `BaseEmbedder`, `BaseReranker`, `BaseLLM`, `BaseDocumentSource`) и сигнатуры Taskiq-задач.
-5. [**`eval_and_ops.md`**](./eval_and_ops.md) — Методология оценки качества RAGAS на верификационном золотом датасете, дерево спанов Langfuse, конфигурация multi-stage `Dockerfile`, `docker-compose.yml` и GitHub Actions CI/CD пайплайн.
+2. [**`architecture.md`**](./architecture.md) — Детальная схема слоёв системы, гибридная модель (SaaS Cloud + Protected On-Premise Box), жизненный цикл запроса (Query Flow), конвейер фонового инжеста данных (Ingestion Flow с debounce), S3 интеграция и матрица отказоустойчивости (Resilience Matrix).
+3. [**`licensing_and_distribution.md`**](./licensing_and_distribution.md) — Криптографическая защита лицензий (Ed25519), сборка защищенного ядра (Cython/PyArmor), поставка коробок через приватный Docker Registry, Heartbeat телеметрия и встраиваемый Web-виджет.
+4. [**`storage_schema.md`**](./storage_schema.md) — DDL миграция PostgreSQL / Supabase, схемы таблиц (`tenants`, `licenses`, `documents`, `parent_chunks`, `child_chunks`, `conversations`, `messages`), HNSW и `sparsevec` индексы, SQL-процедура гибридного поиска `hybrid_search_rrf` и мультитенантные RLS политики безопасности.
+5. [**`modules_spec.md`**](./modules_spec.md) — Строгие Python-контракты и Pydantic V2 схемы (`LicensePayload`, `TenantContext`, `RawDocument`, `ParentChunk`, `ChildChunk`, `RetrievalCandidate`, `RAGResponse`), базовые абстракции интерфейсов (`BaseLicenseValidator`, `BaseChannel`, `BaseEmbedder`, `BaseReranker`, `BaseLLM`, `BaseDocumentSource`) и сигнатуры Taskiq-задач.
+6. [**`eval_and_ops.md`**](./eval_and_ops.md) — Методология оценки качества RAGAS на верификационном золотом датасете, дерево спанов Langfuse, конфигурация multi-stage `Dockerfile`, `docker-compose.yml` и GitHub Actions CI/CD пайплайн.
 
 ---
 

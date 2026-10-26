@@ -8,13 +8,15 @@
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           1. Channel Ingress Layer                          │
 │   - Telegram Bot (aiogram 3.x) with Throttling & Inline Actions (👍/👎)     │
+│   - Web Widget (Embed JS / SSE Stream / Shadow DOM)                         │
 │   - Pluggable Channel Abstraction (FastAPI REST / SSE, CLI)                 │
 └──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │ (raw query + user_id + session_id)
+                                       │ (raw query + tenant_id + user_id + session_id)
                                        ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                       2. Query Understanding Layer                          │
-│   - Session Memory Manager (K=5 context turns)                              │
+│   - License & Tenant Guard (Ed25519 token check + rate limit)               │
+│   - Session Memory Manager (K=5 context turns per tenant)                   │
 │   - Intent Router (RAG Search / Chit-Chat / Meta)                           │
 │   - Query Condenser & Standalone Query Generator                            │
 └──────────────────────────────────────┬──────────────────────────────────────┘
@@ -25,7 +27,7 @@
 │   - Dense Embedding: BAAI/bge-m3 (1024 dim, Cosine)                         │
 │   - Sparse Vector: BAAI/bge-m3 sparsevec                                    │
 │   - Supabase HNSW Search (Top-30 candidates, SET hnsw.ef_search = 40)       │
-│   - Reciprocal Rank Fusion (RRF: α=0.6, β=0.4, k=60) + RBAC Filter (WHERE access_level)│
+│   - Multi-tenant RRF (α=0.6, β=0.4, k=60) + WHERE tenant_id & access_level │
 └──────────────────────────────────────┬──────────────────────────────────────┘
                                        │ (Top-30 child candidates)
                                        ▼
@@ -94,16 +96,16 @@
 ## 3. Архитектура фонового инжеста данных (Ingestion ETL Flow)
 
 ```
-[ Локальная папка ./data/ / S3 / Confluence ]
+[ Локальная папка ./data/ / S3 (Cloudflare R2 / MinIO / AWS) / Confluence ]
                  │
                  ▼
 ┌────────────────────────────────────────────────────────┐
 │            File Watcher with Debounce (2-3s)           │
-│  - Detects new/modified files                          │
+│  - Detects new/modified files per tenant               │
 │  - Computes SHA-256 Checksum                           │
 │  - Checks `documents` table (Skip if already indexed)  │
 └────────────────────────┬───────────────────────────────┘
-                         │ (Job Payload: file_path, hash)
+                         │ (Job Payload: tenant_id, file_path, hash)
                          ▼
 ┌────────────────────────────────────────────────────────┐
 │              Durable Queue (Taskiq + Postgres)         │
@@ -121,7 +123,7 @@
 │  3. Batch Embedding Generation (BGE-M3, batch_size=32):│
 │     - Dense (1024 dim) + Sparse vector extraction      │
 │  4. Transactional DB Upsert (Supabase):                │
-│     - INSERT documents -> parent_chunks -> child_chunks│
+│     - INSERT documents (tenant_id) -> parent -> child  │
 │     - UPDATE status = 'indexed'                        │
 └────────────────────────────────────────────────────────┘
 ```
