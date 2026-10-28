@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS tenants (
     s3_bucket TEXT,
     s3_prefix TEXT,                                   -- базовый путь префикса в бакете (например: tenants/uuid/)
     allowed_origins JSONB NOT NULL DEFAULT '[]'::jsonb, -- строгий allowlist доменов для CORS Web-виджета (БЕЗ wildcard '*'; см. channels.md)
-    config JSONB NOT NULL DEFAULT '{}'::jsonb,
+    config JSONB NOT NULL DEFAULT '{}'::jsonb,        -- напр. observability: {url, username, provisioned} (БЕЗ пароля); branding: {...}
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -336,6 +336,8 @@ CREATE TABLE IF NOT EXISTS box_deployments (
     last_heartbeat_at TIMESTAMPTZ,
     grace_period_expires_at TIMESTAMPTZ,
     restricted_mode BOOLEAN NOT NULL DEFAULT false,
+    telemetry_opt_out BOOLEAN NOT NULL DEFAULT true,          -- уважается вендором; форвард трейсов/метрик только при false
+    observability_forward_enabled BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

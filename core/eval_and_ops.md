@@ -36,14 +36,49 @@
 
 ## 2. Наблюдаемость и Трейсинг (Langfuse Observability)
 
-- **Провайдер**: Langfuse Cloud (Free Tier) или Self-Hosted.
-- Каждый входящий запрос формирует `Trace` в Langfuse с деревом спанов:
-  1. `Span: intent_routing` (вход, intent, score, latency).
-  2. `Span: query_condensation` (chat_history, raw_query, standalone_query).
-  3. `Span: hybrid_retrieval` (dense_time, sparse_time, rrf_top30_chunks).
-  4. `Span: reranking` (flashrank_scores, confidence_gate_passed).
-  5. `Generation: llm_call` (prompt_tokens, completion_tokens, total_cost, model_id).
-- **Online Feedback**: Нажатие кнопок 👍/👎 в Telegram обновляет trace в Langfuse по `trace_id` со значением score: `+1` / `-1`.
+### 2.1. Три сигнала — не смешивать
+
+| Сигнал | Инструмент | Что несёт | Кто видит |
+|---|---|---|---|
+| **Tracing** (дерево спанов) | **Langfuse** | запрос → intent → retrieval → rerank → генерация, латентности, токены, стоимость | оператор тенанта / суперадмин |
+| **Structured logging** | стандартный logger → Loki/DB | ошибки, события, аудит | оператор тенанта |
+| **Telemetry / Heartbeat** | `/licenses/heartbeat` + `box_deployments` | обезличенные счётчики: запросы, аптайм, p95 | только вендор |
+
+Tracing, logging и telemetry **не взаимозаменяемы**. Сырые трейсы живут только в Langfuse; в Postgres — только агрегаты/счётчики.
+
+### 2.2. Провайдер и мультитенантность
+
+- **Провайдер**: **self-hosted Langfuse** на инфраструктуре вендора — единственный production-вариант (Cloud Free Tier — только dev).
+- **Модель B — один проект на тенанта** (изоляция для браузерного read-only доступа). Организация — одна, вендорская.
+- **Суперадмин** имеет роль `Admin`/`Owner` на организации → видит все проекты. **Облачный клиент** — пользователь с ролью `None` на организации + `Viewer` на своём проекте → видит **только свой проект**, **только чтение**, не видит список проектов организации.
+- **Регистрация отключена**: `AUTH_DISABLE_SIGNUP=true`; проекты/пользователей/ключи заводит вендор (Langfuse Org API / SCIM; на старте допустимо вручную в UI).
+- **Доступ клиента** — из браузера, по deep-link `https://<langfuse-host>/project/<project_id>`; дубль интерфейса чтения в админке **не строится** (см. [`admin_panel.md`](./admin_panel.md) §11).
+
+### 2.3. Trace-контракт
+
+Каждый входящий запрос формирует `Trace` в Langfuse с деревом спанов:
+1. `Span: intent_routing` (вход, intent, score, latency).
+2. `Span: query_condensation` (chat_history, raw_query, standalone_query).
+3. `Span: hybrid_retrieval` (dense_time, sparse_time, `chunk_ids` + `scores` — **без сырого текста чанков**).
+4. `Span: reranking` (flashrank_scores, confidence_gate_passed).
+5. `Generation: llm_call` (prompt_tokens, completion_tokens, total_cost, model_id).
+
+**Обязательные атрибуты каждого trace** (`TraceContext`, см. [`modules_spec.md`](./modules_spec.md)):
+`tenant_id`, `environment` (`saas_cloud`/`on_premise_box`), `deployment_id` (для коробок), `channel`, `session_id`, `user_id`, `access_level`, `license_id`.
+
+- **Маскировка**: поля с ПД логируются с `mask`; сырой текст документов в трейсы **не пишется**.
+- **Sampling + retention** — per environment (`trace_sample_rate`, `trace_retention_days`).
+- **Online Feedback**: 👍/👎 обновляет trace по `trace_id` (score `+1`/`-1`); `messages.langfuse_trace_id` связывает строку БД с трейсом.
+
+### 2.4. Коробка (on-premise)
+
+- В compose коробки добавляется **свой Langfuse** (локальный, за `127.0.0.1`/внутренней сетью); клиент — **владелец** инстанса (полный доступ).
+- RAG-бэкенд коробки пишет трейсы туда автоматически (env `LANGFUSE_*` генерируются при первом старте).
+- Вендору уходит **только обезличенный heartbeat**; форвард трейсов/метрик в вендорский Langfuse — строго opt-in при `telemetry_opt_out: false` и feature-флаге лицензии (см. [`licensing_and_distribution.md`](./licensing_and_distribution.md)).
+
+### 2.5. Отказоустойчивость
+
+Запись трейсов — **fire-and-forget / буфер**: отказ Langfuse не блокирует ответ RAG.
 
 ---
 
@@ -140,6 +175,19 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+
+  # Observability: self-hosted Langfuse (см. §2). Полный стек Langfuse (web + worker +
+  # postgres + clickhouse + redis + s3/minio) разворачивается по официальному compose
+  # (langfuse/langfuse); ниже — привязка сервиса к общей сети. В Box слушает 127.0.0.1.
+  langfuse:
+    image: langfuse/langfuse:latest
+    environment:
+      AUTH_DISABLE_SIGNUP: "true"       # самоРегистрация отключена — доступ выдаёт вендор
+      NEXTAUTH_URL: http://localhost:3000
+    env_file: .env                      # DATABASE_URL, CLICKHOUSE_URL, REDIS_URL, SALT, ENCRYPTION_KEY, LANGFUSE_*
+    ports:
+      - "3000:3000"                     # в Box — только 127.0.0.1:3000
+    restart: unless-stopped
 
 volumes:
   pgdata:

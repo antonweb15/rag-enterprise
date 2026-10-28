@@ -398,6 +398,42 @@ class BoxDeployment(BaseModel):
     last_heartbeat_at: Optional[datetime] = None
     grace_period_expires_at: Optional[datetime] = None
     restricted_mode: bool = False
+    telemetry_opt_out: bool = True                       # уважается вендором; форвард только при false
+    observability_forward_enabled: bool = False
+
+class ObservabilityConfig(BaseModel):
+    """Доступ облачного клиента к его проекту Langfuse (read-only Viewer).
+    Хранится в tenants.config как НЕСЕКРЕТНОЕ: пароль здесь не хранится никогда."""
+    url: str                                             # deep-link https://<host>/project/<project_id>
+    username: str                                        # obs-<slug>@<домен>
+    provisioned: bool = False                            # проект/юзер/ключ созданы в Langfuse
+
+class TelemetryConsent(BaseModel):
+    """Согласие на телеметрию/форвард (см. core/licensing_and_distribution.md §3.3)."""
+    telemetry_opt_out: bool = True
+    observability_forward_enabled: bool = False
+
+class TraceContext(BaseModel):
+    """Обязательные атрибуты каждой трассы (см. core/eval_and_ops.md §2.3)."""
+    tenant_id: UUID
+    environment: DeploymentMode = DeploymentMode.SAAS_CLOUD
+    deployment_id: Optional[UUID] = None                 # для on_premise_box
+    channel: ChannelType = ChannelType.WEB_WIDGET
+    session_id: Optional[UUID] = None
+    user_id: Optional[UUID] = None
+    access_level: AccessLevel = AccessLevel.PUBLIC
+    license_id: Optional[UUID] = None
+
+class HeartbeatPayload(BaseModel):
+    """Периодический heartbeat инсталляции (см. core/license_server.md §4.2).
+    Только обезличенные агрегаты; тексты/документы/ПД не передаются."""
+    license_id: UUID
+    hardware_id: str
+    version: str                                         # image_version коробки
+    requests_last_period: int = 0
+    uptime_seconds: int = 0
+    p95_latency_ms: Optional[float] = None
+    telemetry_opt_out: bool = True
 
 class ImpersonationGrant(BaseModel):
     """Break-glass вход сотрудника вендора в чужой тенант. Каждый вход — в аудит."""
@@ -476,10 +512,17 @@ class Settings(BaseSettings):
     object_storage_provider: Literal["s3", "minio", "r2", "local"] = "s3"
     object_storage_local_root: str = "./data"
 
-    # Observability
+    # Observability (см. core/eval_and_ops.md §2, core/admin_panel.md §11)
+    langfuse_host: str = "https://cloud.langfuse.com"    # production: self-hosted URL вендора; Cloud Free Tier — только dev
     langfuse_public_key: Optional[str] = None
     langfuse_secret_key: Optional[str] = None
-    langfuse_host: str = "https://cloud.langfuse.com"
+    langfuse_project_id: Optional[str] = None            # один проект на тенанта (модель B)
+    langfuse_disable_signup: bool = True                 # самоРегистрация отключена — доступ выдаёт вендор
+    trace_sample_rate: float = 1.0                       # доля трасс для записи (контроль стоимости)
+    trace_retention_days: int = 30
+    trace_mask_fields: List[str] = Field(default_factory=lambda: ["password", "api_key", "token"])
+    telemetry_opt_out: bool = True                       # 152-ФЗ/GDPR: по умолчанию телеметрия выключена
+    telemetry_forward_enabled: bool = False              # форвард обезличенных метрик/трейсов из Box вендору (opt-in)
 ```
 
 ---
@@ -753,6 +796,30 @@ class BaseChannel(ABC):
     async def request_cancellation(self, user_id: str) -> None:
         """Опциональный hook отмены генерации. Ядро вызывает его, но не обязано;
         адаптеры без supports_cancellation могут не переопределять (no-op)."""
+        return None
+
+# --- 2.5. Observability (Tracing Sink) ---
+class BaseTraceSink(ABC):
+    """Порт записи трейсов (реализация — Langfuse). Запись fire-and-forget:
+    отказ sink не блокирует ответ RAG (см. core/eval_and_ops.md §2.5)."""
+
+    @abstractmethod
+    async def start_trace(self, ctx: TraceContext, name: str, input: Dict[str, Any]) -> str:
+        """Открывает trace; возвращает trace_id для корреляции (messages.langfuse_trace_id)."""
+        pass
+
+    @abstractmethod
+    async def log_span(self, trace_id: str, name: str, *, latency_ms: float, input: Dict[str, Any], output: Dict[str, Any], metadata: Dict[str, Any]) -> None:
+        """Пишет span (intent/retrieval/rerank/llm_call) с обязательными атрибутами."""
+        pass
+
+    @abstractmethod
+    async def log_score(self, trace_id: str, name: str, value: float) -> None:
+        """Online-feedback 👍/👎 (+1/-1) и метрики LLM-as-a-Judge."""
+        pass
+
+    async def flush(self) -> None:
+        """Опциональный hook сброса буфера (best-effort, не бросает исключений)."""
         return None
 ```
 

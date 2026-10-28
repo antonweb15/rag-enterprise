@@ -84,6 +84,20 @@
 
 ---
 
+### 5.1. Кросс-тенантная наблюдаемость (Langfuse)
+
+Суперадмин видит все облачные проекты в **одном self-hosted Langfuse** (роль `Admin`/`Owner` на организации; вход — SSO, каждое действие — в `backoffice_audit_log`).
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| `POST` | `/api/v1/backoffice/tenants/{id}/observability/provision` | Создать/перевыпустить доступ: проект `tenant-<slug>` + write-ключ `Ingestion` + user `Viewer` (org=`None`). Пароль отдаётся **один раз** |
+| `POST` | `/api/v1/backoffice/tenants/{id}/observability/reset-password` | Принудительный сброс пароля наблюдателя (одноразовый показ) |
+| `GET` | `/api/v1/backoffice/observability/tenants` | Сводка: проекты, статус `provisioned`, последний вход |
+
+Провижининг идёт через Langfuse **Org API / SCIM** (self-hosted; на старте допустимо вручную в UI). В `tenants.config.observability` пишется только `{ url, username, provisioned }` — **пароль не хранится**. Реестр коробок (`box_deployments`) дополнен `telemetry_opt_out` / `observability_forward_enabled`; форвард из Box в вендорский Langfuse — строго opt-in.
+
+---
+
 ## 6. Приоритизация (волны поставки)
 
 - **MVP (волна 1)**: роль `superadmin`, выдача/отзыв лицензий, кросс-тенантный аудит + impersonation, реестр инсталляций (`box_deployments` + heartbeat). Серверная половина — см. [`license_server.md`](./license_server.md).

@@ -55,13 +55,14 @@
 
 | Метод | Путь | Запрос | Ответ | Назначение |
 |---|---|---|---|---|
-| `POST` | `/licenses/heartbeat` | `{license_id, hardware_id, version}` | `{status, grace_until, restricted}` | Периодический heartbeat от инсталляции |
+| `POST` | `/licenses/heartbeat` | `HeartbeatPayload` (`license_id`, `hardware_id`, `version`, обезличенные агрегаты) | `{status, grace_until, restricted}` | Периодический heartbeat от инсталляции |
 | `GET` | `/licenses/crl` | `?since=` | `{revoked: [...], generated_at}` | Список отзыва (CRL-снапшот) |
 | `POST` | `/licenses/reactivate` | `{license_id, old_hardware_id, new_hardware_id, reason}` | `LicenseStatus` | Переактивация при смене железа (enterprise-кейс) |
 
 **Общие правила:**
 - Приватные эндпоинты (§4.1) требуют backoffice-роль с правом выдачи (`superadmin`/`finance`) + 2FA + CSRF.
 - Публичные эндпoint-ы (§4.2) аутентифицируются по лицензии/`hardware_id`; rate-limit — публичная политика.
+- Heartbeat принимает только **обезличенные агрегаты** (`HeartbeatPayload`, см. [`modules_spec.md`](./modules_spec.md)); при `telemetry_opt_out: true` поля метрик игнорируются. Трейсы/документы/ПД через heartbeat не передаются.
 
 ---
 

@@ -83,6 +83,16 @@
 
 ---
 
+## 1.2. Observability Plane (отдельная плоскость)
+
+Наблюдаемость — **отдельная плоскость**, не подменяет data plane и лицензирование:
+
+- **Cloud**: один self-hosted Langfuse вендора; **один проект на тенанта** (модель B); облачный клиент читает **только свой проект** (роль `Viewer`) из браузера; суперадмин видит все проекты на уровне организации.
+- **Box**: собственный локальный Langfuse в compose коробки (клиент — владелец); вендору уходит только обезличенный heartbeat (`/licenses/heartbeat`).
+- **Запись трейсов** — fire-and-forget: отказ Langfuse не блокирует ответ RAG (см. [`eval_and_ops.md`](./eval_and_ops.md) §2).
+
+---
+
 ## 2. Жизненный цикл обработки запроса (Query Flow)
 
 1. **Входное событие** (канало-нейтрально): адаптер канала (Web Widget / Telegram / REST-SSE / CLI) нормализует нативное сообщение в `ChannelEvent` (`event_type`, `user_id`, `tenant_id`, `channel`, `channel_user_id`, `text`, `payload`). Retrieval-ядро принимает **только** `ChannelEvent` и не знает о конкретном канале (см. [`channels.md`](./channels.md), [`modules_spec.md`](./modules_spec.md)).
@@ -170,3 +180,4 @@
 | **PostgreSQL / pgvector** | Network timeout / Pool exhaustion | Connection Pooling (SQLAlchemy Pool / Supavisor при хостинге в Supabase), timeout 10s |
 | **SSE админки (`/admin/ingest/stream`)** | События воркера не видны при `--workers N` | Postgres `LISTEN/NOTIFY` как общая шина + fallback polling `documents.status`; in-memory pub/sub запрещён |
 | **Публичный Web-виджет** | DDoS / всплеск трафика роняет приватную админку | Раздельные `--app` / воркер-пулы и rate-limit политики, готовность к `docker compose scale widget=N` |
+| **Langfuse** | Недоступен / таймаут | Запись трейсов fire-and-forget с буфером; ответ RAG не блокируется (см. §1.2, [`eval_and_ops.md`](./eval_and_ops.md) §2.5) |
