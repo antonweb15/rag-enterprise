@@ -114,12 +114,14 @@ CREATE TABLE IF NOT EXISTS parent_chunks (
     content TEXT NOT NULL,
     token_count INTEGER NOT NULL,
     chunk_index INTEGER NOT NULL,
+    access_level INTEGER NOT NULL DEFAULT 0,          -- Денормализованный уровень доступа (каскад из documents); defense-in-depth для прямых запросов к parent
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_parent_chunks_tenant_id ON parent_chunks(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_parent_chunks_document_id ON parent_chunks(document_id);
+CREATE INDEX IF NOT EXISTS idx_parent_chunks_tenant_access ON parent_chunks(tenant_id, access_level);
 
 -- 7. Таблица дочерних чанков (Child Chunks: 150 - 250 токенов)
 CREATE TABLE IF NOT EXISTS child_chunks (
@@ -369,6 +371,126 @@ ALTER TABLE licenses ADD COLUMN IF NOT EXISTS revocation_reason TEXT;
 
 > RLS: таблицы backoffice (`customers`, `backoffice_users`, `orders`, `activation_codes`, `box_deployments`, `backoffice_audit_log`) **не включаются** в tenant-isolation политики §4. Доступ к ним — исключительно под ролью backoffice `service_role`; клиентских политик (`authenticated`/`anon`) для них нет (fail-closed).
 
+### 2.3. Контракт ре-классификации `access_level` (Этап A, P0)
+
+> Контекст: `access_level` **денормализован** в `child_chunks` и `parent_chunks` для дешёвого primary-фильтра. Источник истины — `documents.access_level`.
+> Любая смена уровня документа обязана **каскадно и транзакционно** перезаписать уровень во всех его чанках, иначе возникает окно рассогласования (Confidential-контент утечёт как Public или наоборот).
+
+```sql
+-- (1) Одноразовый backfill существующих данных при внедрении колонки parent_chunks.access_level.
+--     Без него старые parent-строки останутся Public (DEFAULT 0) и ранее Confidential-контент «раскроется».
+UPDATE parent_chunks p
+   SET access_level = d.access_level
+  FROM documents d
+ WHERE p.document_id = d.id
+   AND p.access_level IS DISTINCT FROM d.access_level;
+
+-- Подстраховка для child_chunks (на случай ранее рассогласованных строк):
+UPDATE child_chunks c
+   SET access_level = d.access_level
+  FROM parent_chunks p
+  JOIN documents d ON p.document_id = d.id
+ WHERE c.parent_id = p.id
+   AND c.access_level IS DISTINCT FROM d.access_level;
+
+-- (2) Триггер каскадной ре-классификации: смена documents.access_level в ОДНОЙ транзакции
+--     перезаписывает parent_chunks.access_level и child_chunks.access_level.
+CREATE OR REPLACE FUNCTION cascade_access_level() RETURNS TRIGGER AS $$
+BEGIN
+    UPDATE parent_chunks SET access_level = NEW.access_level WHERE document_id = NEW.id;
+    UPDATE child_chunks  SET access_level = NEW.access_level
+     WHERE parent_id IN (SELECT id FROM parent_chunks WHERE document_id = NEW.id);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_documents_access_cascade ON documents;
+CREATE TRIGGER trg_documents_access_cascade
+    AFTER UPDATE OF access_level ON documents
+    FOR EACH ROW WHEN (OLD.access_level IS DISTINCT FROM NEW.access_level)
+    EXECUTE FUNCTION cascade_access_level();
+```
+
+- **Транзакционность — обязательна.** Допустима Taskiq-задача каскада только при явной пометке «eventually consistent» и временном **fail-closed** (до завершения синхронизации чанки документа считаются недоступными), иначе появится окно рассогласования.
+- При инжесте новые `parent_chunks`/`child_chunks` наследуют `access_level` от своего `documents` (проставляется воркером при записи).
+
+### 2.4. Группы, коллекции и per-document ACL (Этап B, P1 — за feature-флагом `enterprise_acl`)
+
+> Контекст: плоская шкала `access_level` (0–3) покрывает ~80% кейсов и остаётся **primary-фильтром по умолчанию**.
+> Для enterprise-гибкости («отдел A видит только свои документы, даже если все Internal») добавляется опциональный слой: группы субъектов + коллекции (базы знаний) + точечный ACL «субъект → документ».
+> Все таблицы — **additive-only**, под tenant-RLS (§4). Фичи включаются флагом лицензии `enterprise_acl`/`collections` (см. [`licensing_and_distribution.md`](./licensing_and_distribution.md)); при выключенном флаге работает только `access_level`.
+
+```sql
+-- 20. Группы субъектов (маппятся на оргструктуру / группы из IdP).
+CREATE TABLE IF NOT EXISTS groups (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    access_level INTEGER NOT NULL DEFAULT 0,          -- базовый уровень допуска группы
+    external_ref TEXT,                                -- id группы в IdP (OIDC/SAML/SCIM), NULL для локальных
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_groups_tenant_name UNIQUE (tenant_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_groups_tenant_id ON groups(tenant_id);
+
+-- 21. Членство пользователей в группах (m2m).
+CREATE TABLE IF NOT EXISTS user_groups (
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    group_id UUID NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, group_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_groups_group ON user_groups(group_id);
+CREATE INDEX IF NOT EXISTS idx_user_groups_tenant ON user_groups(tenant_id);
+
+-- 22. Коллекции (базы знаний / папки, с иерархией).
+CREATE TABLE IF NOT EXISTS collections (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    access_level INTEGER NOT NULL DEFAULT 0,
+    parent_id UUID REFERENCES collections(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_collections_tenant_name UNIQUE (tenant_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_collections_tenant_id ON collections(tenant_id);
+
+-- 23. Привязка документов к коллекциям (m2m).
+CREATE TABLE IF NOT EXISTS document_collections (
+    document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    collection_id UUID NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    PRIMARY KEY (document_id, collection_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_collections_collection ON document_collections(collection_id);
+
+-- 24. Точечный ACL: «субъект (user|group) -> документ». permission — enum на расширение.
+CREATE TABLE IF NOT EXISTS document_acl (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    principal_type TEXT NOT NULL,                     -- 'user' | 'group'
+    principal_id UUID NOT NULL,                       -- users.id | groups.id (по principal_type)
+    permission TEXT NOT NULL DEFAULT 'read',          -- 'read' (enum заложен на расширение: 'write'/'manage'/...)
+    granted_by UUID,                                  -- users.id администратора, выдавшего грант (аудит)
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_document_acl UNIQUE (tenant_id, document_id, principal_type, principal_id, permission)
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_acl_document ON document_acl(document_id);
+CREATE INDEX IF NOT EXISTS idx_document_acl_principal ON document_acl(tenant_id, principal_type, principal_id);
+```
+
+- **Семантика эффективного доступа** (вычисляется `PolicyEvaluator`, см. [`modules_spec.md`](./modules_spec.md)): документ доступен субъекту, если
+  `access_level(doc) <= max(user.access_level, max(group.access_level))` **ИЛИ** есть явная строка `document_acl` для `user` / одной из его `group`.
+  При выключенном `enterprise_acl` второе слагаемое (ACL/группы) игнорируется — остаётся чистый `access_level`.
+- Контракт возврата из `PolicyEvaluator` — **множество/предикат разрешённых ресурсов** (`allowed_document_ids` / SQL-предикат), применяемый **до** top-k/RRF (не пост-фильтр), иначе ломаются ранжирование и RRF.
+
 ---
 
 ## 3. SQL Хранимая функция гибридного поиска (внутренняя деталь `PgVectorStore`)
@@ -470,16 +592,25 @@ from sqlalchemy.orm import Session
 def set_tenant_guc(session: Session, transaction, connection) -> None:
     """SET LOCAL живет строго в пределах транзакции -> безопасно при пуле соединений."""
     tenant_id = session.info.get("tenant_id")
+    # Уровень допуска пересчитывается на бэкенде из таблицы users; НИКОГДА из payload клиента.
+    user_access_level = session.info.get("user_access_level")
     connection.execute(
         text("SELECT set_config('app.current_tenant_id', :tid, true)"),  # is_local=true == SET LOCAL
         {"tid": str(tenant_id) if tenant_id else ""},
     )
+    connection.execute(
+        # Вторичный контур RLS по уровню. Пусто -> 0 (Public) в политиках (fail-closed).
+        text("SELECT set_config('app.user_access_level', :lvl, true)"),
+        {"lvl": str(int(user_access_level)) if user_access_level is not None else ""},
+    )
 ```
 
-- `session.info["tenant_id"]` проставляется middleware / DI-контейнером из аутентифицированного контекста — **никогда** из тела запроса клиента.
+- `session.info["tenant_id"]` и `session.info["user_access_level"]` проставляются middleware / DI-контейнером из аутентифицированного контекста — **никогда** из тела запроса клиента.
+- `app.user_access_level` ставится **тем же** механизмом (`SET LOCAL` в той же транзакции), что и `app.current_tenant_id`, чтобы значение не «протекло» по пулу соединений в соседний запрос.
 - Процессы админки и воркеры ходят под ролью `service_role` (`BYPASSRLS`); ключ `service_role` существует **только на сервере** и никогда не попадает во фронтенд-бандл.
-- Если `tenant_id` не установлен, политики изоляции дают пустую выборку (fail-closed), а не полный доступ.
-- Запрещено: `SET` без `LOCAL`, установка GUC вне транзакции, передача `tenant_id` параметром API.
+- ⛔ **Query-путь конечного пользователя НИКОГДА не исполняется под `service_role`** — иначе фильтр по уровню (и по тенанту) обходится через `BYPASSRLS`. `service_role` допустим только для воркеров инжеста, миграций и backoffice-контура.
+- Если `tenant_id` не установлен, политики изоляции дают пустую выборку (fail-closed), а не полный доступ. Если `app.user_access_level` не установлен — трактуется как `0` (Public), т.е. максимально ограничительно.
+- Запрещено: `SET` без `LOCAL`, установка GUC вне транзакции, передача `tenant_id`/`access_level` параметром API.
 
 ### 4.1. Политики изоляции
 
@@ -528,17 +659,28 @@ CREATE POLICY tenant_isolation_users ON users
     FOR ALL TO authenticated, anon
     USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
 
+-- documents/parent_chunks/child_chunks: двойной предикат (tenant + уровень).
+-- COALESCE(..., '0') -> отсутствие GUC трактуется как Public (fail-closed по уровню).
 CREATE POLICY tenant_isolation_documents ON documents 
     FOR ALL TO authenticated, anon
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
+    USING (
+        tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+        AND access_level <= COALESCE(NULLIF(current_setting('app.user_access_level', true), ''), '0')::int
+    );
 
 CREATE POLICY tenant_isolation_parent_chunks ON parent_chunks 
     FOR ALL TO authenticated, anon
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
+    USING (
+        tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+        AND access_level <= COALESCE(NULLIF(current_setting('app.user_access_level', true), ''), '0')::int
+    );
 
 CREATE POLICY tenant_isolation_child_chunks ON child_chunks 
     FOR ALL TO authenticated, anon
-    USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
+    USING (
+        tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
+        AND access_level <= COALESCE(NULLIF(current_setting('app.user_access_level', true), ''), '0')::int
+    );
 
 CREATE POLICY tenant_isolation_conversations ON conversations 
     FOR ALL TO authenticated, anon
@@ -552,6 +694,39 @@ CREATE POLICY tenant_isolation_messages ON messages
             WHERE tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid
         )
     );
+
+-- 3. RLS для таблиц Этапа B (группы/коллекции/ACL) — изоляция по tenant_id.
+ALTER TABLE groups ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_groups ENABLE ROW LEVEL SECURITY;
+ALTER TABLE collections ENABLE ROW LEVEL SECURITY;
+ALTER TABLE document_collections ENABLE ROW LEVEL SECURITY;
+ALTER TABLE document_acl ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY service_all_groups ON groups FOR ALL TO service_role USING (true);
+CREATE POLICY service_all_user_groups ON user_groups FOR ALL TO service_role USING (true);
+CREATE POLICY service_all_collections ON collections FOR ALL TO service_role USING (true);
+CREATE POLICY service_all_document_collections ON document_collections FOR ALL TO service_role USING (true);
+CREATE POLICY service_all_document_acl ON document_acl FOR ALL TO service_role USING (true);
+
+CREATE POLICY tenant_isolation_groups ON groups 
+    FOR ALL TO authenticated, anon
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
+
+CREATE POLICY tenant_isolation_user_groups ON user_groups 
+    FOR ALL TO authenticated, anon
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
+
+CREATE POLICY tenant_isolation_collections ON collections 
+    FOR ALL TO authenticated, anon
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
+
+CREATE POLICY tenant_isolation_document_collections ON document_collections 
+    FOR ALL TO authenticated, anon
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
+
+CREATE POLICY tenant_isolation_document_acl ON document_acl 
+    FOR ALL TO authenticated, anon
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
 ```
 
 ---
