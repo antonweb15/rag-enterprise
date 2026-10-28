@@ -1,6 +1,6 @@
 # 🏢 Enterprise RAG (Retrieval-Augmented Generation)
 
-> Модульная, отказоустойчивая корпоративная RAG-система на базе локального / free-tier стека с интерфейсом в Telegram и хранилищем в Supabase (PostgreSQL + pgvector).
+> Модульная, отказоустойчивая корпоративная RAG-система на базе локального / free-tier стека с интерфейсами Web-виджет / Telegram / REST-SSE и хранилищем на PostgreSQL 15+ / pgvector (Supabase или self-hosted).
 
 ---
 
@@ -19,8 +19,8 @@
 
 | Слой | Технологии |
 |---|---|
-| **Интерфейс** | Telegram Bot (`aiogram 3.x`), расширяемая абстракция `BaseChannel` |
-| **База данных** | Supabase (PostgreSQL 15+, `pgvector 0.7+`, HNSW, RLS, `sparsevec`) |
+| **Интерфейс** | Web-виджет (Shadow DOM, white-label, основной), Telegram Bot (`aiogram 3.x`), Admin SPA (`/api/v1/admin/*`), расширяемая абстракция `BaseChannel` (`web`/`telegram`/`rest_sse`/`cli`) |
+| **База данных** | PostgreSQL 15+ + `pgvector 0.7+` (Supabase или self-hosted), HNSW, RLS, `sparsevec` |
 | **Эмбеддинги & Реранкинг** | `BAAI/bge-m3` (Dense 1024-dim + Sparse), `FlashRank` |
 | **LLM & Оркестрация** | Groq Cloud (`llama-3.3-70b`), Google Gemini Free, Ollama (`qwen2.5:7b`) |
 | **Фоновые задачи & ETL** | `taskiq` + Postgres queue (`taskiq-pg`), `Docling` парсер |
@@ -28,17 +28,19 @@
 
 ---
 
-### 🚀 Быстрый старт (Docker)
+### 🚀 Быстрый старт (Docker) — ⚠️ Фаза 3+ (планируется)
+
+> **Важно:** проект находится на стадии спецификации (Фаза 1–2). Прикладной код, `Dockerfile`, `docker-compose.yml` и `.env.example` ещё не добавлены в репозиторий — сценарий ниже заработает после реализации рантайма (Фаза 3+). Сейчас это целевой интерфейс запуска, а не готовая команда.
 
 ```bash
 # 1. Клонирование репозитория
 git clone git@github.com:antonweb15/rag-enterprise.git
 cd rag-enterprise
 
-# 2. Настройка переменных окружения
+# 2. Настройка переменных окружения (появится в Фазе 3+)
 cp .env.example .env
 
-# 3. Запуск сервисов
+# 3. Запуск сервисов (появится в Фазе 3+)
 docker compose up -d
 ```
 

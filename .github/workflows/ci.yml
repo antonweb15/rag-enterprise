@@ -1,5 +1,14 @@
 name: CI & Tests
 
+# Целевой пайплайн описан в core/eval_and_ops.md §4 (5 шагов):
+#   1. Lint & Static Check   — ruff + mypy            (реализовано ниже)
+#   2. Unit & Integration    — pytest                 (реализовано ниже)
+#   3. Evaluation Gate       — python -m tests.eval_ragas  (Фаза 3+, нужен рантайм + golden_dataset.json)
+#   4. Core Protection & Image Release (теги v*)       — Cython/PyArmor + ghcr.io  (Фаза 4+)
+#   5. Secrets               — через GitHub Actions Secrets
+# Текущее состояние репо (Фаза 1–2): есть только tests/, поэтому активны шаги 1–2.
+# Конфигурация ruff/mypy/pytest вынесена в pyproject.toml.
+
 on:
   push:
     branches: [ main, master ]
@@ -28,9 +37,11 @@ jobs:
         run: |
           python -m ruff check .
 
+      # Целевой scope (core/eval_and_ops.md §4) — `mypy services/ packages/`.
+      # На Фазе 1–2 в репо есть только tests/, поэтому scope задан в pyproject.toml ([tool.mypy] files).
       - name: Run Mypy (Typecheck)
         run: |
-          python -m mypy tests/
+          python -m mypy
 
   tests:
     name: Unit & Integration Tests
