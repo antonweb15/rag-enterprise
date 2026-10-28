@@ -256,6 +256,119 @@ UPDATE conversations  SET channel = 'rest_sse' WHERE channel = 'fastapi';
 UPDATE tenants SET allowed_origins = '[]'::jsonb WHERE allowed_origins = '["*"]'::jsonb;
 ```
 
+### 2.2. Таблицы вендорского контура (Backoffice) — additive-only
+
+> Контекст: это **кросс-тенантные** данные вендора (см. [`vendor_backoffice.md`](./vendor_backoffice.md), [`license_server.md`](./license_server.md)).
+> Все таблицы backoffice **вне tenant-RLS** (нет колонки/политики `app.current_tenant_id`) и доступны **только** `service_role` backoffice-контура.
+> В артефакте `on_premise_box` этот контур **не разворачивается**; таблицы существуют на инфраструктуре вендора (отдельная backoffice-БД/схема рекомендуется).
+> Приватный Ed25519-ключ подписи лицензий здесь **не хранится** — только в signing-сервисе / HSM / KMS.
+
+```sql
+-- 13. Покупатели (юр. лица). ОТДЕЛЬНО от tenants: 1 customer : N tenants.
+CREATE TABLE IF NOT EXISTS customers (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    legal_name TEXT NOT NULL,
+    display_name TEXT,
+    inn TEXT,                                          -- ИНН / tax id
+    contact_email TEXT NOT NULL,
+    contact_phone TEXT,
+    contract_number TEXT,
+    status TEXT NOT NULL DEFAULT 'trial',             -- 'trial', 'active', 'suspended', 'churned'
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 14. Пользователи backoffice (сотрудники вендора). НЕ путать с users (тенантные).
+CREATE TABLE IF NOT EXISTS backoffice_users (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    email TEXT NOT NULL UNIQUE,
+    hashed_password TEXT NOT NULL,                     -- Argon2id
+    role TEXT NOT NULL DEFAULT 'support',             -- BackofficeRole: 'superadmin', 'support', 'finance', 'sales'
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    totp_secret_enc BYTEA,                             -- 2FA обязателен для всех backoffice-ролей
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 15. Заказы (минимальный каркас биллинга; полноценный биллинг — внешний провайдер).
+CREATE TABLE IF NOT EXISTS orders (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    plan TEXT NOT NULL,
+    amount_minor BIGINT,                              -- сумма в минорных единицах (копейки/центы)
+    currency TEXT NOT NULL DEFAULT 'RUB',
+    status TEXT NOT NULL DEFAULT 'pending',          -- 'pending', 'paid', 'cancelled', 'refunded'
+    external_provider TEXT,                           -- 'stripe' | 'paddle' | 'manual' | ...
+    external_ref TEXT,                               -- id платежа во внешнем провайдере
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id);
+
+-- 16. Активационные коды 'RAG-ENT-XXXX-YYYY-ZZZZ' (выдаются вендором под заказ).
+CREATE TABLE IF NOT EXISTS activation_codes (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    code TEXT NOT NULL UNIQUE,                        -- 'RAG-ENT-XXXX-YYYY-ZZZZ'
+    customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    order_id UUID REFERENCES orders(id) ON DELETE SET NULL,
+    plan TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'issued',           -- 'issued', 'redeemed', 'revoked', 'expired'
+    redeemed_by_tenant_id UUID REFERENCES tenants(id) ON DELETE SET NULL,
+    expires_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_activation_codes_customer ON activation_codes(customer_id);
+CREATE INDEX IF NOT EXISTS idx_activation_codes_status ON activation_codes(status);
+
+-- 17. Реестр проданных/развёрнутых коробок (on-premise инсталляции).
+CREATE TABLE IF NOT EXISTS box_deployments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    tenant_id UUID REFERENCES tenants(id) ON DELETE SET NULL,
+    image_version TEXT,                              -- версия поставленного закрытого образа
+    delivered_at TIMESTAMPTZ,
+    hardware_id TEXT,                               -- fingerprint инсталляции
+    last_heartbeat_at TIMESTAMPTZ,
+    grace_period_expires_at TIMESTAMPTZ,
+    restricted_mode BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_box_deployments_customer ON box_deployments(customer_id);
+CREATE INDEX IF NOT EXISTS idx_box_deployments_hardware ON box_deployments(hardware_id);
+
+-- 18. Глобальный аудит вендора (кросс-тенантный; отдельно от tenant-scoped audit_log).
+--     Сюда же пишутся break-glass входы (impersonation) сотрудников вендора в чужой тенант.
+CREATE TABLE IF NOT EXISTS backoffice_audit_log (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    actor_backoffice_user_id UUID REFERENCES backoffice_users(id) ON DELETE SET NULL,
+    actor_email TEXT,
+    action TEXT NOT NULL,                            -- 'license.issue', 'license.revoke', 'tenant.impersonate', ...
+    impersonated_tenant_id UUID REFERENCES tenants(id) ON DELETE SET NULL,
+    object_type TEXT,
+    object_id TEXT,
+    ip_address INET,
+    user_agent TEXT,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_backoffice_audit_created ON backoffice_audit_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_backoffice_audit_impersonated ON backoffice_audit_log(impersonated_tenant_id);
+
+-- 19. Расширение licenses вендорскими полями выдачи/отзыва (additive, nullable).
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS issued_by UUID REFERENCES backoffice_users(id);
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS customer_id UUID REFERENCES customers(id);
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ;
+ALTER TABLE licenses ADD COLUMN IF NOT EXISTS revocation_reason TEXT;
+```
+
+> RLS: таблицы backoffice (`customers`, `backoffice_users`, `orders`, `activation_codes`, `box_deployments`, `backoffice_audit_log`) **не включаются** в tenant-isolation политики §4. Доступ к ним — исключительно под ролью backoffice `service_role`; клиентских политик (`authenticated`/`anon`) для них нет (fail-closed).
+
 ---
 
 ## 3. SQL Хранимая функция гибридного поиска (внутренняя деталь `PgVectorStore`)

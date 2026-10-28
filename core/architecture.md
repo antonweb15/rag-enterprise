@@ -79,6 +79,8 @@
 Детали приватного операторского контура — в [`admin_panel.md`](./admin_panel.md).
 Единый источник по пользовательским каналам доставки (Web Widget, Telegram, REST/SSE, CLI), handshake виджета, брендингу и режимам Cloud/Box — [`channels.md`](./channels.md).
 
+> ⚠️ Строка «Выдача/продление лицензий из панели вендора» относится к **отдельному** суперадминскому контуру вендора, а не к тенантной админке: он описан в [`vendor_backoffice.md`](./vendor_backoffice.md) (роли `BackofficeRole`, клиенты, коды, реестр коробок, break-glass impersonation), а серверная половина лицензирования (issuance/revocation/heartbeat/CRL) — в [`license_server.md`](./license_server.md).
+
 ---
 
 ## 2. Жизненный цикл обработки запроса (Query Flow)

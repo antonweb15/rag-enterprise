@@ -33,6 +33,15 @@ class AdminRole(str, Enum):
     OPERATOR = "operator"                      # загрузка и переиндексация без удаления
     VIEWER = "viewer"                          # только чтение списков, чанков и дашборда
 
+class BackofficeRole(str, Enum):
+    """Роли вендорского контура (backoffice), ОТДЕЛЬНОГО от тенантной админки.
+    Эти роли НЕ входят в AdminRole и не выдаются тенантным пользователям;
+    их носители — сотрудники вендора. См. core/vendor_backoffice.md."""
+    SUPERADMIN = "superadmin"                  # полный кросс-тенантный доступ, управление backoffice-пользователями
+    SUPPORT = "support"                        # impersonation/«войти как» тенант (break-glass) с обязательным аудитом
+    FINANCE = "finance"                        # биллинг, заказы, счета, продления (без доступа к данным тенанта)
+    SALES = "sales"                            # клиенты, заказы, активационные коды (без доступа к данным тенанта)
+
 class DeploymentMode(str, Enum):
     SAAS_CLOUD = "saas_cloud"
     ON_PREMISE_BOX = "on_premise_box"
@@ -324,6 +333,79 @@ class DashboardStats(BaseModel):
     queries_last_24h: int = 0
     p95_retrieval_latency_ms: Optional[float] = None
 
+# --- Vendor Backoffice & License Server (см. core/vendor_backoffice.md, core/license_server.md) ---
+class CustomerStatus(str, Enum):
+    TRIAL = "trial"
+    ACTIVE = "active"
+    SUSPENDED = "suspended"
+    CHURNED = "churned"
+
+class Customer(BaseModel):
+    """Юридическое лицо/покупатель. ОТДЕЛЬНО от tenant (тех. инсталляция).
+    Связь 1 customer : N tenants (cloud-тенант + box-инсталляции)."""
+    id: UUID
+    legal_name: str
+    display_name: Optional[str] = None
+    inn: Optional[str] = None                            # ИНН / tax id
+    contact_email: str
+    contact_phone: Optional[str] = None
+    contract_number: Optional[str] = None
+    status: CustomerStatus = CustomerStatus.TRIAL
+    created_at: datetime
+    updated_at: datetime
+
+class ActivationCodeStatus(str, Enum):
+    ISSUED = "issued"
+    REDEEMED = "redeemed"
+    REVOKED = "revoked"
+    EXPIRED = "expired"
+
+class ActivationCode(BaseModel):
+    """Код вида 'RAG-ENT-XXXX-YYYY-ZZZZ', выдаётся вендором под заказ."""
+    code: str                                           # 'RAG-ENT-XXXX-YYYY-ZZZZ'
+    customer_id: UUID
+    order_id: Optional[UUID] = None
+    plan: str
+    status: ActivationCodeStatus = ActivationCodeStatus.ISSUED
+    redeemed_by_tenant_id: Optional[UUID] = None
+    expires_at: Optional[datetime] = None
+    created_at: datetime
+
+class LicenseIssueRequest(BaseModel):
+    """Вендорская ВЫДАЧА лицензии (в отличие от self-service LicenseActivationRequest).
+    Подпись — только offline Ed25519-ключом signing-сервиса, см. core/license_server.md."""
+    customer_id: UUID
+    tenant_id: UUID
+    plan: str
+    max_documents: int = 1000
+    max_users: int = 10
+    expires_at: Optional[datetime] = None               # None => бессрочная box-лицензия
+    hardware_id: Optional[str] = None                   # привязка для airgap box-лицензии
+    features: List[str] = Field(default_factory=lambda: ["hybrid_search"])
+
+class LicenseRevokeRequest(BaseModel):
+    license_id: UUID
+    reason: str
+
+class BoxDeployment(BaseModel):
+    """Реестр проданных/развёрнутых коробок (on-premise инсталляций)."""
+    id: UUID
+    customer_id: UUID
+    tenant_id: Optional[UUID] = None
+    image_version: Optional[str] = None                 # версия поставленного закрытого образа
+    delivered_at: Optional[datetime] = None
+    hardware_id: Optional[str] = None
+    last_heartbeat_at: Optional[datetime] = None
+    grace_period_expires_at: Optional[datetime] = None
+    restricted_mode: bool = False
+
+class ImpersonationGrant(BaseModel):
+    """Break-glass вход сотрудника вендора в чужой тенант. Каждый вход — в аудит."""
+    backoffice_user_id: UUID
+    target_tenant_id: UUID
+    reason: str
+    expires_at: datetime                                # короткоживущий scope (минуты/часы)
+
 # --- Настройки приложения (pydantic-settings) ---
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -333,6 +415,17 @@ class Settings(BaseSettings):
     license_key: Optional[str] = None
     license_public_key: Optional[str] = None
     license_server_url: Optional[str] = "https://license.your-rag-domain.com"
+
+    # Vendor Backoffice & License Server (ТОЛЬКО на стороне вендора; в артефакт Box НЕ попадает)
+    # См. core/vendor_backoffice.md, core/license_server.md.
+    backoffice_enabled: bool = False                       # отдельный контур/--app вендора; у клиента всегда False
+    backoffice_host: str = "127.0.0.1"                    # отдельный host/порт, не смешивать с тенантной админкой
+    backoffice_port: int = 8090
+    backoffice_rate_limit_per_minute: int = 60            # отдельная (private) политика для backoffice
+    backoffice_totp_required: bool = True                 # 2FA обязателен для всех backoffice-ролей
+    # Приватный Ed25519-ключ подписи лицензий НЕ хранится в вебе/БД: только в signing-сервисе / HSM / KMS.
+    license_signing_service_url: Optional[str] = None     # endpoint signing-сервиса (sign/verify в разных процессах)
+    license_crl_url: Optional[str] = None                 # revocation list для онлайн-проверки отзыва
 
     # Supabase / Postgres
     supabase_url: Optional[str] = None
@@ -411,6 +504,31 @@ class BaseLicenseValidator(ABC):
     @abstractmethod
     async def enforce_quota(self, tenant_id: UUID, metric: Literal["documents", "users", "requests"]) -> None:
         """Проверка квот лицензии (max_documents, max_users) с выбросом QuotaExceededError при превышении."""
+        pass
+
+class BaseLicenseServer(ABC):
+    """Серверная половина лицензирования (ТОЛЬКО контур вендора, см. core/license_server.md).
+    Приватный Ed25519-ключ подписи живёт в отдельном signing-сервисе / HSM / KMS,
+    а не в этом процессе и не в БД backoffice."""
+
+    @abstractmethod
+    async def issue_license(self, request: LicenseIssueRequest) -> str:
+        """Выпуск подписанного Ed25519-токена лицензии (issuance). Возвращает license_token."""
+        pass
+
+    @abstractmethod
+    async def revoke_license(self, request: LicenseRevokeRequest) -> None:
+        """Отзыв лицензии: отметка revoked_at/reason + публикация в CRL (revocation list)."""
+        pass
+
+    @abstractmethod
+    async def register_heartbeat(self, hardware_id: str, license_id: UUID) -> None:
+        """Приём heartbeat от box-инсталляции: обновление last_heartbeat_at, расчёт grace/restricted."""
+        pass
+
+    @abstractmethod
+    async def generate_activation_code(self, customer_id: UUID, plan: str) -> ActivationCode:
+        """Генерация кода 'RAG-ENT-XXXX-YYYY-ZZZZ' под заказ/клиента."""
         pass
 
 class BaseTenantResolver(ABC):
