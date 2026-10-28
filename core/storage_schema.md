@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS tenants (
     storage_type TEXT NOT NULL DEFAULT 's3',          -- 's3', 'minio', 'local'
     s3_bucket TEXT,
     s3_prefix TEXT,                                   -- базовый путь префикса в бакете (например: tenants/uuid/)
-    allowed_origins JSONB NOT NULL DEFAULT '["*"]'::jsonb, -- список доменов для CORS Web-виджета
+    allowed_origins JSONB NOT NULL DEFAULT '[]'::jsonb, -- строгий allowlist доменов для CORS Web-виджета (БЕЗ wildcard '*'; см. channels.md)
     config JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
     channel_user_id TEXT NOT NULL,                    -- Telegram user ID или внешний Auth ID
-    channel TEXT NOT NULL DEFAULT 'telegram',         -- 'telegram', 'web', 'fastapi'
+    channel TEXT NOT NULL DEFAULT 'telegram',         -- ChannelType: 'web', 'telegram', 'rest_sse', 'cli' (legacy 'fastapi' -> 'rest_sse')
     access_level INTEGER NOT NULL DEFAULT 0,          -- 0: Public, 1: Internal, 2: Confidential, 3: Strict
     is_active BOOLEAN NOT NULL DEFAULT true,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
     user_id TEXT NOT NULL,                            -- ID пользователя в Telegram / Channel
-    channel TEXT NOT NULL DEFAULT 'telegram',         -- 'telegram', 'web', 'fastapi'
+    channel TEXT NOT NULL DEFAULT 'telegram',         -- ChannelType: 'web', 'telegram', 'rest_sse', 'cli' (legacy 'fastapi' -> 'rest_sse')
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -238,6 +238,22 @@ DROP TRIGGER IF EXISTS trg_documents_status_notify ON documents;
 CREATE TRIGGER trg_documents_status_notify
     AFTER INSERT OR UPDATE OF status ON documents
     FOR EACH ROW EXECUTE FUNCTION notify_document_status();
+```
+
+### 2.1. Миграция каналов (`channel`) и allowlist доменов
+
+> Контекст: `UserContext.channel` переведён на `ChannelType` (`web/telegram/rest_sse/cli`, см. [`modules_spec.md`](./modules_spec.md)).
+> Legacy-значение `'fastapi'` рассинхронизировано и не парсится str-enum — требуется backfill.
+> Дефолт `allowed_origins` исправлен с `'["*"]'` на `'[]'` (wildcard по умолчанию — security-баг).
+
+```sql
+-- Backfill каналов: legacy 'fastapi' -> 'rest_sse'
+UPDATE users          SET channel = 'rest_sse' WHERE channel = 'fastapi';
+UPDATE conversations  SET channel = 'rest_sse' WHERE channel = 'fastapi';
+
+-- Снятие небезопасного wildcard-дефолта у существующих тенантов, не настроивших allowlist вручную.
+-- ВНИМАНИЕ: выполнять осознанно — виджет перестанет обслуживаться, пока origin не добавлен явно.
+UPDATE tenants SET allowed_origins = '[]'::jsonb WHERE allowed_origins = '["*"]'::jsonb;
 ```
 
 ---

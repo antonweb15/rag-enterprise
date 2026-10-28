@@ -5,7 +5,7 @@
 ```python
 from datetime import datetime
 from enum import Enum
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Literal
+from typing import Annotated, Any, AsyncGenerator, Dict, List, Optional, Tuple, Literal
 from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -36,6 +36,91 @@ class AdminRole(str, Enum):
 class DeploymentMode(str, Enum):
     SAAS_CLOUD = "saas_cloud"
     ON_PREMISE_BOX = "on_premise_box"
+
+# --- Каналы доставки (см. core/channels.md) ---
+class ChannelType(str, Enum):
+    WEB_WIDGET = "web"          # основной интерфейс конечного пользователя (Shadow DOM, white-label)
+    TELEGRAM = "telegram"       # вторичный канал доставки
+    REST_SSE = "rest_sse"       # headless REST / SSE для кастомных интеграций
+    CLI = "cli"                 # typer-консоль (air-gapped Box)
+
+class ChannelCapabilities(BaseModel):
+    """Возможности конкретного канала. Читаются ТОЛЬКО на границе канала
+    (рендер/доставка); бизнес-логика поиска (retrieval) по ним НЕ ветвится.
+    Дефолты консервативные: отсутствие/неизвестность возможности не ломает рендер.
+    Каждый адаптер обязан иметь контракт-тест, подтверждающий заявленные флаги."""
+    supports_streaming: bool = False
+    supports_markdown: bool = False
+    supports_citations: bool = False
+    supports_feedback_buttons: bool = False
+    supports_attachments: bool = False
+    supports_reply_threading: bool = False
+    supports_commands: bool = False
+    supports_callback_payloads: bool = False
+    supports_cancellation: bool = False
+    max_message_length: Optional[int] = None    # None = без ограничения / задаёт адаптер (напр. Telegram = 4096)
+    max_attachments_per_message: int = 0
+
+class ChannelEventType(str, Enum):
+    TEXT_MESSAGE = "text_message"
+    COMMAND = "command"         # /start, /help, /activate
+    CALLBACK = "callback"       # 👍/👎 и иные callback-кнопки
+    ATTACHMENT = "attachment"
+    EDIT = "edit"
+    DELETE = "delete"
+
+class AttachmentRef(BaseModel):
+    file_id: str                                 # идентификатор во внешнем канале или storage_ref
+    file_name: Optional[str] = None
+    mime_type: Optional[str] = None
+    size_bytes: Optional[int] = None
+
+class ChannelEvent(BaseModel):
+    """Канало-нейтральное входящее событие. Адаптеры каналов обязаны мапить
+    нативные события в ChannelEvent. Retrieval-ядро принимает ТОЛЬКО ChannelEvent
+    и ничего не знает о конкретном канале ('один вход, два выхода')."""
+    event_type: ChannelEventType = ChannelEventType.TEXT_MESSAGE
+    user_id: UUID
+    tenant_id: UUID
+    channel: ChannelType
+    channel_user_id: str
+    session_id: Optional[str] = None
+    text: Optional[str] = None
+    payload: Dict[str, Any] = Field(default_factory=dict)   # callback_data, аргументы команды
+    attachments: List[AttachmentRef] = Field(default_factory=list)
+    created_at: datetime
+
+# --- Типизированный брендинг (см. core/channels.md §7) ---
+class WidgetBranding(BaseModel):
+    """White-label виджета. Управляется из админки на 100%.
+    ВНИМАНИЕ: welcome_message/disclaimer рендерятся как ТЕКСТ (не raw-HTML),
+    на виджете обязателен CSP; logo_url — только https + allowlist Content-Type."""
+    config_version: int = 1
+    title: Optional[str] = Field(None, max_length=120)
+    subtitle: Optional[str] = Field(None, max_length=200)
+    logo_url: Optional[str] = Field(None, pattern=r"^https://")   # допустимы только изображения (проверка Content-Type на бэкенде)
+    primary_color: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
+    welcome_message: Optional[str] = Field(None, max_length=1000)
+    disclaimer: Optional[str] = Field(None, max_length=500)
+    suggested_questions: List[Annotated[str, Field(max_length=120)]] = Field(default_factory=list, max_length=5)  # ≤5 вопросов, ≤120 символов на вопрос
+
+class TelegramBranding(BaseModel):
+    """Частичный white-label Telegram. Аватар НЕ настраивается из админки
+    (только @BotFather; setMyPhoto в Bot API не существует)."""
+    config_version: int = 1
+    bot_name: Optional[str] = Field(None, max_length=64)         # setMyName
+    description: Optional[str] = Field(None, max_length=512)      # setMyDescription
+    short_description: Optional[str] = Field(None, max_length=120) # setMyShortDescription
+    commands: Dict[Annotated[str, Field(max_length=32)], Annotated[str, Field(max_length=256)]] = Field(default_factory=dict, max_length=100)  # setMyCommands: {command: description}; Telegram-лимиты
+    welcome_message: Optional[str] = Field(None, max_length=1000)
+    # photo — НЕ настраивается из админки (BotFather only)
+
+class BrandingConfig(BaseModel):
+    """Агрегирующая модель брендинга тенанта. Хранится в tenants.config JSONB
+    (additive-only, с config_version для миграции старых тенантов)."""
+    config_version: int = 1
+    widget: WidgetBranding = Field(default_factory=WidgetBranding)
+    telegram: Optional[TelegramBranding] = None
 
 # --- Модели лицензирования и тенантов ---
 class LicensePayload(BaseModel):
@@ -74,8 +159,11 @@ class UserContext(BaseModel):
     user_id: UUID                      # Обязательный ID из таблицы users (без fallback uuid4)
     tenant_id: UUID                    # ID привязанного тенанта
     channel_user_id: str
-    channel: str = "telegram"
+    channel: ChannelType = ChannelType.TELEGRAM
     access_level: AccessLevel = AccessLevel.PUBLIC
+    # Обратная совместимость: str-enum парсит старые строковые литералы ('telegram'/'web')
+    # на переходный период. Legacy-значение 'fastapi' в БД мигрируется в 'rest_sse' (backfill),
+    # т.к. str-enum его не распарсит. Новый код обязан использовать ChannelType.
 
 # --- Модели документов и чанков ---
 class RawDocument(BaseModel):
@@ -273,8 +361,8 @@ class Settings(BaseSettings):
     confidence_threshold: float = 0.35
     max_history_turns: int = 5
 
-    # Channels
-    telegram_bot_token: Optional[str] = None
+    # Channels (см. core/channels.md)
+    telegram_bot_token: Optional[str] = None      # по умолчанию ОДИН общий бот; свой бот на тенанта — платная опция
 
     # Admin Panel & Session Auth (см. core/admin_panel.md)
     admin_host: str = "127.0.0.1"                 # в режиме Box наружу порт не публикуется
@@ -508,11 +596,28 @@ class BaseDocumentSource(ABC):
         """Генератор событий добавления/изменения файлов с debounce."""
         pass
 
-# --- 2.6. Channel Interface ---
+# --- 2.6. Channel Interface (см. core/channels.md) ---
 class BaseChannel(ABC):
+    """Порт канала доставки. Инвариант 'один вход, два выхода':
+    receive() нормализует нативные события в ChannelEvent (вход),
+    send_response()/stream_response() — выход. Retrieval-ядро использует
+    только ChannelEvent и флаги capabilities на границе канала."""
+
+    @property
+    @abstractmethod
+    def capabilities(self) -> ChannelCapabilities:
+        """Возможности адаптера (стриминг/markdown/цитаты/кнопки/...).
+        Подтверждаются обязательным контракт-тестом адаптера."""
+        pass
+
     @abstractmethod
     async def start(self) -> None:
         """Запуск обработчика входящих сообщений канала."""
+        pass
+
+    @abstractmethod
+    async def receive(self) -> AsyncGenerator[ChannelEvent, None]:
+        """Генератор нормализованных входящих событий канала (ChannelEvent)."""
         pass
 
     @abstractmethod
@@ -526,6 +631,11 @@ class BaseChannel(ABC):
     ) -> RAGResponse:
         """Потоковая передача ответа с троттлингом обновлений и сбором итогового RAGResponse."""
         pass
+
+    async def request_cancellation(self, user_id: str) -> None:
+        """Опциональный hook отмены генерации. Ядро вызывает его, но не обязано;
+        адаптеры без supports_cancellation могут не переопределять (no-op)."""
+        return None
 ```
 
 ---
