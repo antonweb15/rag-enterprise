@@ -72,21 +72,47 @@ COPY --from=builder /root/.local /root/.local
 ENV PATH=/root/.local/bin:$PATH
 ENV PYTHONUNBUFFERED=1
 
-COPY core/ core/
-COPY src/ src/
+COPY packages/core/ packages/core/
+COPY services/api/ services/api/
 
-# Default CMD (override in docker-compose for worker)
-CMD ["python", "-m", "src.main_bot"]
+# Default CMD — generic API-приложение (конкретный --app переопределяется в docker-compose
+# для каждого контура: admin-api / widget-api / telegram-bot / ingestion-worker).
+# Telegram-бот — лишь один из каналов, не дефолт.
+CMD ["uvicorn", "services.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
 ### 3.2. `docker-compose.yml`
 ```yaml
 services:
+  admin-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Отдаёт Admin SPA статикой + роутеры /api/v1/admin/*.
+    # В On-Premise Box слушает строго 127.0.0.1 (доступ только через SSH-туннель / reverse-proxy).
+    command: uvicorn services.api.admin_app:app --host 127.0.0.1 --port 8001
+    env_file: .env
+    restart: unless-stopped
+    depends_on:
+      - postgres-pgvector
+
+  widget-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Публичный, анонимный, высоконагруженный контур — вынесен в отдельный --app,
+    # готов к горизонтальному масштабированию (docker compose up --scale widget-api=N).
+    command: uvicorn services.api.widget_app:app --host 0.0.0.0 --port 8002
+    env_file: .env
+    restart: unless-stopped
+    depends_on:
+      - postgres-pgvector
+
   telegram-bot:
     build:
       context: .
       dockerfile: Dockerfile
-    command: python -m src.main_bot
+    command: python -m services.api.channels.telegram_bot
     env_file: .env
     restart: unless-stopped
     depends_on:
@@ -96,7 +122,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: taskiq worker src.tasks.ingestion_tasks:broker
+    command: taskiq worker services.api.tasks.ingestion_tasks:broker
     env_file: .env
     volumes:
       - ./data:/app/data
@@ -121,14 +147,44 @@ volumes:
 
 ---
 
+## 3.3. Миграции БД (Alembic, additive-only)
+
+- **Старт контейнера**: entrypoint выполняет `alembic upgrade head` перед запуском приложения.
+- **Pre-upgrade backup hook**: перед миграцией в Box делается `pg_dump` текущей БД (защита от упавшего апдейта на клиентском Postgres).
+- **Additive-only**: деструктивные операции (`DROP COLUMN`, `DROP TABLE`, сужающий `ALTER TYPE`) запрещены; удаление полей — только через deprecation в следующих мажорных версиях.
+
+## 3.4. Реалтайм-статусы инжеста (Postgres LISTEN/NOTIFY)
+
+- `GET /api/v1/admin/ingest/stream` (SSE) транслирует статусы `pending → processing → indexed | failed`.
+- Источник событий — **Postgres `LISTEN/NOTIFY`** (worker делает `NOTIFY` при смене `documents.status`), fallback — polling таблицы `documents.status`.
+- ⛔ **In-memory pub/sub запрещён**: при `--workers > 1` SSE в одном воркере не увидит событий taskiq-воркера без общего брокера.
+
+## 3.5. Rate-limiting (раздельные политики)
+
+| Контур | Политика |
+|---|---|
+| `widget-api` (public) | Жёсткий лимит по IP и `session_id`, защита от DDoS/парсинга; отдельный процесс — DDoS на виджет не роняет админку |
+| `admin-api` (private) | Мягкий лимит по аутентифицированному пользователю; доступ только из доверенного контура |
+
+---
+
+## 3.6. Монорепо и тулинг
+
+Структура `apps/admin` + `apps/widget` + `services/api` + `packages/core` обслуживается двумя независимыми тулчейнами:
+- **Frontend**: `pnpm workspaces` (сборка Vite → `dist/`, который `admin-api` отдаёт как `StaticFiles`).
+- **Backend**: `uv` (или Poetry) workspace для Python-пакетов.
+- **CI**: два пайплайна (front / back) с независимым кэшем зависимостей.
+
+---
+
 ## 4. CI/CD Пайплайн (GitHub Actions & Protected Box Distribution)
 
 Workflow-файл `.github/workflows/ci.yml`:
-1. **Lint & Static Check**: `ruff check .` и `mypy src` (строгая проверка без проглатывания ошибок).
+1. **Lint & Static Check**: `ruff check .` и `mypy services/ packages/` (строгая проверка без проглатывания ошибок).
 2. **Unit & Integration Tests**: `pytest tests/ -v` (проверка изоляции тенантов, валидации токенов Ed25519, RRF и S3 коннектора).
 3. **Evaluation Gate**: Запуск `python -m tests.eval_ragas` — проверка, что метрики качества на `golden_dataset.json` не деградировали ниже допустимого порога SLO.
 4. **On-Premise Core Protection & Image Release** (при тегах `v*`):
    - Компиляция модулей ядра (`rag_core/licensing/`, `rag_core/retrieval/`) в `.so` через Cython/PyArmor.
    - Сборка закрытого Docker-образа `rag-core:enterprise-vX.Y`.
    - Публикация в приватный GitHub Container Registry (`ghcr.io/your-org/rag-core`).
-5. **Secrets**: Управление конфиденциальными переменными (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `LICENSE_PRIVATE_KEY`, `GROQ_API_KEY`, `TELEGRAM_BOT_TOKEN`) строго через **GitHub Actions Secrets**.
+5. **Secrets**: Управление конфиденциальными переменными (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `LICENSE_SIGNING_KEY`, `JWT_SECRET`, `GROQ_API_KEY`, `TELEGRAM_BOT_TOKEN`) строго через **GitHub Actions Secrets**.

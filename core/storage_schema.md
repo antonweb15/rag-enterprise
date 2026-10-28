@@ -2,13 +2,14 @@
 
 ## 1. Обзор схемы базы данных
 
-Хранилище базируется на **Supabase (PostgreSQL 15+)** с расширением **`pgvector` (0.7+)**.
+Хранилище базируется на **PostgreSQL 15+ / `pgvector` (0.7+)**. **Supabase — лишь один из вариантов хостинга** этой же Postgres (наравне с self-hosted Docker, managed-облаком или локальной СУБД заказчика в режиме `on_premise_box`); обязательной зависимостью Supabase **не является**. Для dev-окружения допустим SQLite через SQLAlchemy (без векторного плеча).
+
 Схема поддерживает:
 - Разделение на **Parent** (для формирования контекста LLM) и **Child** чанки (для точного векторного и sparse поиска).
 - Поддержку **Dense (1024-dim)** и **Sparse (250002-dim)** векторов модели `BAAI/bge-m3`.
 - **HNSW** индексы для высокоскоростного векторного и sparse поиска.
 - **Двухконтурную модель RBAC**:
-  - **Первичный контур (Primary Filter)**: предикат `WHERE d.access_level <= user_access_level` внутри хранимой функции `hybrid_search_rrf`. Значение `user_access_level` определяется бэкендом на основе аутентифицированного пользователя (таблица `users`) и не может быть подделано клиентом.
+  - **Первичный контур (Primary Filter)**: фильтр `access_level` применяется в query-пути — контрактно на уровне приложения (`BaseVectorStore` / `Retriever`), а в pgvector-пути дополнительно внутри функции `hybrid_search_rrf` (её внутренняя деталь, см. §3) через предикат `WHERE d.access_level <= user_access_level`. Значение `user_access_level` определяется бэкендом на основе аутентифицированного пользователя (таблица `users`) и не может быть подделано клиентом.
   - **Вторичный контур (Defense-in-depth)**: PostgreSQL **Row-Level Security (RLS)** для изоляции данных при прямых табличных запросах.
 - Хранение пользователей (`users`), сессий (`conversations`), сообщений (`messages`) и меток обратной связи (thumbs up/down).
 
@@ -174,11 +175,78 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
+
+-- 10. Учетные данные хранилищ тенанта (BaseObjectStorage: S3 / MinIO / R2 / local)
+-- ВАЖНО: секреты хранятся ТОЛЬКО в зашифрованном виде (AES-GCM с ключом из KMS / env master key).
+-- Плейнтекст ключей в БД запрещен; расшифровка выполняется исключительно на бэкенде.
+CREATE TABLE IF NOT EXISTS storage_credentials (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL DEFAULT 's3',              -- 's3' | 'minio' | 'r2' | 'local'
+    endpoint_url TEXT,
+    region TEXT DEFAULT 'auto',
+    bucket TEXT,
+    prefix TEXT,                                      -- базовый per-tenant префикс ({tenant_id}/)
+    access_key_id_enc BYTEA,                          -- AES-GCM ciphertext
+    secret_access_key_enc BYTEA,                      -- AES-GCM ciphertext
+    encryption_key_id TEXT,                           -- идентификатор ключа в KMS / ротации
+    nonce BYTEA,                                      -- AES-GCM nonce
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_storage_credentials_tenant_provider UNIQUE (tenant_id, provider, bucket)
+);
+
+CREATE INDEX IF NOT EXISTS idx_storage_credentials_tenant_id ON storage_credentials(tenant_id);
+
+-- 11. Журнал действий администраторов (Audit Log приватного контура админки)
+CREATE TABLE IF NOT EXISTS audit_log (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE,
+    actor_user_id UUID,                               -- пользователь админки (fastapi-users)
+    actor_email TEXT,
+    action TEXT NOT NULL,                             -- 'document.upload', 'document.delete', 'license.activate', 'auth.login'
+    object_type TEXT,
+    object_id TEXT,
+    ip_address INET,
+    user_agent TEXT,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_tenant_created ON audit_log(tenant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor_user_id);
+
+-- 12. Канал уведомлений для SSE админки (реалтайм-статусы инжеста)
+-- Смена documents.status публикуется через NOTIFY; in-memory pub/sub запрещен.
+CREATE OR REPLACE FUNCTION notify_document_status() RETURNS TRIGGER AS $$
+BEGIN
+    PERFORM pg_notify(
+        'ingest_events',
+        json_build_object(
+            'document_id', NEW.id,
+            'tenant_id', NEW.tenant_id,
+            'status', NEW.status,
+            'error_message', NEW.error_message
+        )::text
+    );
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_documents_status_notify ON documents;
+CREATE TRIGGER trg_documents_status_notify
+    AFTER INSERT OR UPDATE OF status ON documents
+    FOR EACH ROW EXECUTE FUNCTION notify_document_status();
 ```
 
 ---
 
-## 3. SQL Хранимая функция гибридного поиска (Hybrid Search with RRF & Multi-Tenancy)
+## 3. SQL Хранимая функция гибридного поиска (внутренняя деталь `PgVectorStore`)
+
+> ⚠️ **Статус контракта**: функция `hybrid_search_rrf` — **внутренняя оптимизационная деталь реализации `PgVectorStore`**, а не контракт системы.
+> Контрактом являются `BaseVectorStore.search_dense()` / `BaseVectorStore.search_sparse()` + слияние RRF в **application-layer** (`Retriever.fuse_rrf`, см. [`modules_spec.md`](./modules_spec.md) §2.3).
+> Функция вызывается только при `capabilities.supports_hybrid_rrf = True` и обязана давать результат, идентичный коду-фьюжену. Это сохраняет оптимизированный путь для pgvector, не превращая «сменный вектор-стор» в фикцию.
 
 ```sql
 CREATE OR REPLACE FUNCTION hybrid_search_rrf(
@@ -260,6 +328,32 @@ $$;
 
 ## 4. Настройка Row-Level Security (RLS)
 
+### 4.0. Контракт «RLS + SQLAlchemy» (обязательный)
+
+SQLAlchemy использует **пул соединений** под одной ролью БД. Без явной установки GUC в начале **каждой** транзакции RLS не сработает, а при переиспользовании соединения значение «протечёт» в соседний запрос. Поэтому установка `app.current_tenant_id` — обязательный системный контракт:
+
+```python
+# packages/core/db/session.py
+from sqlalchemy import event, text
+from sqlalchemy.orm import Session
+
+@event.listens_for(Session, "after_begin")
+def set_tenant_guc(session: Session, transaction, connection) -> None:
+    """SET LOCAL живет строго в пределах транзакции -> безопасно при пуле соединений."""
+    tenant_id = session.info.get("tenant_id")
+    connection.execute(
+        text("SELECT set_config('app.current_tenant_id', :tid, true)"),  # is_local=true == SET LOCAL
+        {"tid": str(tenant_id) if tenant_id else ""},
+    )
+```
+
+- `session.info["tenant_id"]` проставляется middleware / DI-контейнером из аутентифицированного контекста — **никогда** из тела запроса клиента.
+- Процессы админки и воркеры ходят под ролью `service_role` (`BYPASSRLS`); ключ `service_role` существует **только на сервере** и никогда не попадает во фронтенд-бандл.
+- Если `tenant_id` не установлен, политики изоляции дают пустую выборку (fail-closed), а не полный доступ.
+- Запрещено: `SET` без `LOCAL`, установка GUC вне транзакции, передача `tenant_id` параметром API.
+
+### 4.1. Политики изоляции
+
 Для обеспечения безопасности в многоарендной (Multi-Tenant) SaaS и On-Premise среде настраивается двухконтурный RLS:
 1. **Service Role**: служебные процессы (фоновые воркеры Taskiq, CLI миграции) работают под ролью `service_role`.
 2. **Арендная изоляция сессий (Tenant Isolation)**: для запросов пула сессий устанавливается `app.current_tenant_id` (`SET LOCAL app.current_tenant_id = '...'`).
@@ -267,6 +361,8 @@ $$;
 ```sql
 -- Включение RLS
 ALTER TABLE tenants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE storage_credentials ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE licenses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
@@ -284,6 +380,11 @@ CREATE POLICY service_all_parent_chunks ON parent_chunks FOR ALL TO service_role
 CREATE POLICY service_all_child_chunks ON child_chunks FOR ALL TO service_role USING (true);
 CREATE POLICY service_all_conversations ON conversations FOR ALL TO service_role USING (true);
 CREATE POLICY service_all_messages ON messages FOR ALL TO service_role USING (true);
+CREATE POLICY service_all_storage_credentials ON storage_credentials FOR ALL TO service_role USING (true);
+CREATE POLICY service_all_audit_log ON audit_log FOR ALL TO service_role USING (true);
+
+-- storage_credentials и audit_log доступны ТОЛЬКО service_role:
+-- клиентских политик для ролей authenticated/anon для них не существует (fail-closed).
 
 -- 2. Клиентские политики с изоляцией по app.current_tenant_id
 CREATE POLICY tenant_isolation_tenants ON tenants 
@@ -323,3 +424,17 @@ CREATE POLICY tenant_isolation_messages ON messages
         )
     );
 ```
+
+---
+
+## 5. Регламент миграций (Alembic)
+
+Миграции на чужой инфраструктуре (`on_premise_box`) — **самая частая причина упавшего обновления**. Контракт:
+
+1. **Единый инструмент**: `alembic` поверх SQLAlchemy 2.0 (для Supabase-хостинга используется та же миграционная цепочка, а не `supabase migrations`).
+2. **Автоприменение на старте**: entrypoint контейнера выполняет `alembic upgrade head` до запуска API/воркера; при ошибке контейнер падает (fail-fast), а не стартует с рассогласованной схемой.
+3. **Pre-upgrade backup hook** (обязателен для Box): перед `upgrade head` выполняется `pg_dump` в смонтированный volume; при невозможности создать бэкап апгрейд **не начинается**.
+4. **Additive-only**: разрешены `CREATE TABLE`, `ADD COLUMN` (nullable или с `DEFAULT`), `CREATE INDEX CONCURRENTLY`, `CREATE POLICY`.
+   ⛔ Запрещены деструктивные операции: `DROP TABLE`, `DROP COLUMN`, сужающий `ALTER TYPE`, `NOT NULL` без значения по умолчанию, переименования. Удаление устаревших полей выполняется отдельным «expand → migrate → contract» циклом **минимум через один мажорный релиз**.
+5. **Идемпотентность**: весь DDL пишется с `IF NOT EXISTS` / `CREATE OR REPLACE`, чтобы повторный прогон на частично применённой схеме был безопасен.
+6. **Проверка в CI**: тест `alembic upgrade head` + `alembic downgrade -1` на `testcontainers-postgres`, а также линтер, блокирующий деструктивные ключевые слова в новых ревизиях.

@@ -28,6 +28,11 @@ class IntentType(str, Enum):
     CHIT_CHAT = "chit_chat"
     META_COMMAND = "meta_command"
 
+class AdminRole(str, Enum):
+    ADMIN = "admin"                            # полный доступ: документы, лицензия, пользователи
+    OPERATOR = "operator"                      # загрузка и переиндексация без удаления
+    VIEWER = "viewer"                          # только чтение списков, чанков и дашборда
+
 class DeploymentMode(str, Enum):
     SAAS_CLOUD = "saas_cloud"
     ON_PREMISE_BOX = "on_premise_box"
@@ -130,6 +135,107 @@ class RAGResponse(BaseModel):
     confidence_passed: bool = True
     trace_id: Optional[str] = None
 
+# --- Модели админ-панели (см. core/admin_panel.md) ---
+class AdminConfig(BaseModel):
+    """Runtime-конфиг для единого билда SPA: различия режимов без форков."""
+    deployment_mode: DeploymentMode
+    features: List[str] = Field(default_factory=list)   # 'tenant_management', 'license_activation', 'local_file_manager', ...
+    branding: Dict[str, Any] = Field(default_factory=dict)
+    api_version: str = "v1"
+
+class DocumentUploadRequest(BaseModel):
+    tenant_id: UUID
+    file_name: str
+    content_hash: str                                   # sha256, рассчитан на клиенте для ранней дедупликации
+    size_bytes: int
+    access_level: AccessLevel = AccessLevel.PUBLIC
+    relative_path: Optional[str] = None                 # путь внутри загруженной папки (webkitdirectory)
+
+class DocumentListItem(BaseModel):
+    id: UUID
+    source_uri: str
+    file_name: str
+    status: DocumentStatus
+    access_level: AccessLevel = AccessLevel.PUBLIC
+    size_bytes: Optional[int] = None
+    parent_chunk_count: int = 0
+    child_chunk_count: int = 0
+    error_message: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+class ChunkView(BaseModel):
+    """Эмбеддинги НЕ отдаются по умолчанию: 1024 float x N чанков = мегабайты JSON.
+    dense_embedding/sparse_embedding заполняются только при include_vectors=true и только для одного чанка."""
+    chunk_id: UUID
+    parent_id: Optional[UUID] = None
+    level: Literal["parent", "child"]
+    content: str
+    token_count: int
+    chunk_index: int
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    dense_norm: Optional[float] = None
+    has_sparse_vector: bool = False
+    dense_embedding: Optional[List[float]] = None
+    sparse_embedding: Optional[Dict[int, float]] = None
+
+class LicenseActivationRequest(BaseModel):
+    activation_code: Optional[str] = None               # 'RAG-ENT-XXXX-YYYY-ZZZZ'
+    license_token: Optional[str] = None                 # PASETO v4.public / JWT (Ed25519)
+    license_file_b64: Optional[str] = None              # содержимое загруженного .key файла
+
+class MachineFingerprint(BaseModel):
+    hardware_id: str                                    # sha256(cpu_id + mac_addr)
+    hostname: str
+    collected_at: datetime
+
+class LicenseStatus(BaseModel):
+    """Источник истины по лицензии — только бэкенд. Фронт отображает этот объект как есть."""
+    is_valid: bool
+    plan: str
+    mode: str                                           # 'online_subscription' | 'airgap_enterprise'
+    issued_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    max_documents: int = 0
+    max_users: int = 0
+    used_documents: int = 0
+    used_users: int = 0
+    hardware_id: Optional[str] = None
+    last_heartbeat_at: Optional[datetime] = None
+    grace_period_expires_at: Optional[datetime] = None
+    restricted_mode: bool = False
+    restricted_reason: Optional[str] = None
+
+class AuditLogEntry(BaseModel):
+    id: UUID
+    tenant_id: Optional[UUID] = None
+    actor_user_id: UUID
+    actor_email: str
+    action: str                                         # 'document.upload', 'document.delete', 'license.activate', ...
+    object_type: Optional[str] = None
+    object_id: Optional[str] = None
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+class IngestQueueItem(BaseModel):
+    document_id: UUID
+    file_name: str
+    status: DocumentStatus
+    stage: Optional[str] = None                         # 'parsing' | 'splitting' | 'embedding' | 'upserting'
+    retry_count: int = 0
+    error_message: Optional[str] = None
+    updated_at: datetime
+
+class DashboardStats(BaseModel):
+    documents_total: int = 0
+    documents_by_status: Dict[DocumentStatus, int] = Field(default_factory=dict)
+    child_chunks_total: int = 0
+    storage_bytes_used: int = 0
+    queries_last_24h: int = 0
+    p95_retrieval_latency_ms: Optional[float] = None
+
 # --- Настройки приложения (pydantic-settings) ---
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -169,6 +275,25 @@ class Settings(BaseSettings):
 
     # Channels
     telegram_bot_token: Optional[str] = None
+
+    # Admin Panel & Session Auth (см. core/admin_panel.md)
+    admin_host: str = "127.0.0.1"                 # в режиме Box наружу порт не публикуется
+    admin_port: int = 8080
+    admin_static_dir: Optional[str] = "apps/admin/dist"   # отдача SPA как StaticFiles (один контейнер для Box)
+    jwt_secret: Optional[str] = None              # HS256, per-install, >= 32 байт; генерируется при первом старте
+    session_cookie_name: str = "rag_admin_session"
+    session_ttl_seconds: int = 3600
+    session_cookie_secure: bool = True            # HttpOnly + Secure + SameSite=Lax, НЕ localStorage
+    session_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
+    csrf_enabled: bool = True
+    totp_required_for_admin: bool = True
+    admin_rate_limit_per_minute: int = 120        # приватная политика (отдельно от публичного widget)
+    widget_rate_limit_per_minute: int = 20        # публичная политика
+
+    # Vector Store & Object Storage ports
+    vector_store_provider: Literal["pgvector", "qdrant", "chroma"] = "pgvector"
+    object_storage_provider: Literal["s3", "minio", "r2", "local"] = "s3"
+    object_storage_local_root: str = "./data"
 
     # Observability
     langfuse_public_key: Optional[str] = None
@@ -211,6 +336,66 @@ class BaseTenantResolver(ABC):
         """Проверка текущего потребления ресурсов тенантом против установленных лимитов."""
         pass
 
+# --- 2.0.1. Storage Ports (сменные реализации) ---
+class VectorStoreCapabilities(BaseModel):
+    supports_sparse: bool = True
+    supports_hybrid_rrf: bool = False        # True только там, где есть нативная серверная реализация (PgVectorStore)
+    max_dimensions: int = 1024
+
+class BaseVectorStore(ABC):
+    """Порт векторного хранилища. Контракт — раздельные плечи поиска;
+    слияние RRF выполняется в application-layer (Retriever), а не внутри стора."""
+
+    @property
+    @abstractmethod
+    def capabilities(self) -> VectorStoreCapabilities:
+        """Capability-флаги конкретной реализации (pgvector / Qdrant / Chroma)."""
+        pass
+
+    @abstractmethod
+    async def upsert_chunks(self, tenant_id: UUID, chunks: List[ChildChunk]) -> None:
+        """Идемпотентная запись/обновление child-чанков вместе с векторами."""
+        pass
+
+    @abstractmethod
+    async def search_dense(
+        self, tenant_id: UUID, query_dense: List[float], k: int = 30, user_access_level: int = 0
+    ) -> List[RetrievalCandidate]:
+        """Плотное плечо: Top-k по косинусному расстоянию с фильтром tenant_id и access_level."""
+        pass
+
+    @abstractmethod
+    async def search_sparse(
+        self, tenant_id: UUID, query_sparse: Dict[int, float], k: int = 30, user_access_level: int = 0
+    ) -> List[RetrievalCandidate]:
+        """Лексическое плечо (sparsevec / BM25). Если supports_sparse=False — возвращает пустой список."""
+        pass
+
+    @abstractmethod
+    async def delete_by_document(self, tenant_id: UUID, document_id: UUID) -> int:
+        """Каскадное удаление векторов документа (для DELETE /admin/documents/{id})."""
+        pass
+
+class BaseObjectStorage(ABC):
+    """Порт объектного хранилища (S3 / MinIO / R2 / local). Все операции строго per-tenant."""
+
+    @abstractmethod
+    async def put(self, tenant_id: UUID, key: str, data: bytes, content_type: Optional[str] = None) -> str:
+        """Запись объекта по префиксу {tenant_id}/{key}. Возвращает storage_ref (URI)."""
+        pass
+
+    @abstractmethod
+    async def get(self, tenant_id: UUID, key: str) -> bytes:
+        pass
+
+    @abstractmethod
+    async def delete(self, tenant_id: UUID, key: str) -> None:
+        pass
+
+    @abstractmethod
+    async def list(self, tenant_id: UUID, prefix: str = "", limit: int = 1000) -> List[str]:
+        pass
+
 # --- 2.1. Embedder Interface ---
 class BaseEmbedder(ABC):
     @abstractmethod
@@ -248,6 +433,29 @@ class BaseRetriever(ABC):
     ) -> List[RetrievalCandidate]:
         """Гибридный поиск Dense + Sparse с RRF слиянием и изоляцией по tenant_id."""
         pass
+
+class Retriever(BaseRetriever):
+    """Эталонная реализация: вызывает BaseVectorStore.search_dense() и .search_sparse(),
+    затем выполняет RRF-слияние В КОДЕ (α=0.6, β=0.4, k=60).
+
+    RRF — контракт application-layer, а не SQL. SQL-функция hybrid_search_rrf остаётся
+    внутренней деталью оптимизации PgVectorStore (вызывается только при
+    capabilities.supports_hybrid_rrf = True и идентична по результату коду-фьюжену).
+    """
+
+    def __init__(self, vector_store: BaseVectorStore, embedder: BaseEmbedder) -> None: ...
+
+    @staticmethod
+    def fuse_rrf(
+        dense: List[RetrievalCandidate],
+        sparse: List[RetrievalCandidate],
+        k: int = 60,
+        alpha: float = 0.6,
+        beta: float = 0.4,
+    ) -> List[RetrievalCandidate]:
+        """RRF(d) = alpha/(k + rank_dense(d)) + beta/(k + rank_sparse(d)).
+        Отсутствие документа в списке => ранг бесконечность => вклад слагаемого 0."""
+        ...
 
 class BaseReranker(ABC):
     @abstractmethod
@@ -335,17 +543,56 @@ broker = AioPikaBroker()
 @broker.task
 async def process_document_task(
     tenant_id: UUID,
-    document_uri: str,
+    storage_ref: str,                 # ссылка на объект в BaseObjectStorage ({tenant_id}/{key})
     content_hash: str,
     access_level: int = 0
 ) -> None:
     """
     1. Проверка активной квоты тенанта (enforce_quota(tenant_id, 'documents')).
     2. Проверка наличия content_hash в таблице documents для данного tenant_id (идемпотентность).
-    3. Парсинг структуры (Docling / layout parser).
+    3. Чтение файла через BaseObjectStorage.get(tenant_id, key) и парсинг структуры (Docling / layout parser).
     4. Token-aware нарезка на Parent и Child чанки с установкой tenant_id и access_level.
     5. Генерация батчей BGE-M3 эмбеддингов (batch_size=32).
-    6. Транзакционная запись в БД и перевод статуса в 'indexed'.
+    6. Транзакционная запись (BaseVectorStore.upsert_chunks) и перевод статуса в 'indexed'.
+    7. Публикация события прогресса: NOTIFY ingest_events (для SSE админки). In-memory pub/sub запрещён.
     """
     pass
 ```
+
+---
+
+## 4. Контракт безопасности сессий админки (`fastapi-users`)
+
+```python
+# services/api/admin/auth.py
+from fastapi_users.authentication import AuthenticationBackend, CookieTransport, JWTStrategy
+
+# HTTP-only cookie: JWT НИКОГДА не попадает в JS-контекст (no localStorage / sessionStorage)
+cookie_transport = CookieTransport(
+    cookie_name=settings.session_cookie_name,
+    cookie_max_age=settings.session_ttl_seconds,
+    cookie_path="/api/v1",
+    cookie_httponly=True,      # обязательно
+    cookie_secure=True,        # обязательно (HTTPS / SSH-туннель)
+    cookie_samesite="lax",     # обязательно
+)
+
+def get_jwt_strategy() -> JWTStrategy:
+    # HS256 + per-install секрет (>= 32 байт), генерируется при первом старте и ротируется при деплое.
+    # ЗАПРЕЩЕНО использовать здесь LICENSE_SIGNING_KEY (Ed25519, вендорский офлайн-ключ):
+    # компрометация инстанса клиента дала бы возможность выписывать лицензии от имени вендора.
+    return JWTStrategy(secret=settings.jwt_secret, lifetime_seconds=settings.session_ttl_seconds)
+
+admin_auth_backend = AuthenticationBackend(
+    name="admin_cookie",
+    transport=cookie_transport,
+    get_strategy=get_jwt_strategy,
+)
+```
+
+**Обязательные правила:**
+- ⛔ `localStorage` / `sessionStorage` для токенов — **запрещены**; SPA не передаёт `Authorization: Bearer`.
+- CSRF-защита (`X-CSRF-Token` / double-submit cookie) обязательна для `POST`, `PUT`, `PATCH`, `DELETE`.
+- TOTP 2FA обязателен для роли `AdminRole.ADMIN`.
+- Каждая мутация пишет `AuditLogEntry` (actor, IP, User-Agent) в той же транзакции.
+- Детали см. в [`admin_panel.md`](./admin_panel.md) §4.
