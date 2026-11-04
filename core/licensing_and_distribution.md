@@ -69,11 +69,26 @@
     "hybrid_search",
     "s3_connector",
     "flashrank_rerank",
-    "web_widget"
+    "web_widget",
+    "enterprise_acl",
+    "collections",
+    "sso_oidc"
   ]
 }
 ```
 *Примечание: Для бессрочных тарифов поле `expires_at` устанавливается в `null`.*
+
+### 3.1a. Feature-флаги разделения доступа (Этап B/C)
+
+Флаги гейтят **функционал**, а не код (код един, форков нет). Проверка — только на бэкенде.
+
+| Флаг | Что включает | При выключенном |
+|---|---|---|
+| `enterprise_acl` | Группы (`groups`/`user_groups`) + точечный `document_acl` + `PolicyEvaluator` учитывает ACL/группы | Работает только плоский `access_level` (0–3) |
+| `collections` | Коллекции/базы знаний (`collections`/`document_collections`) и UI управления ими | Коллекции скрыты |
+| `sso_oidc` | Authenticated-режим виджета (OIDC/SAML → JWT с `subject + groups`, `Settings.oidc_*`) | Виджет только анонимный (`access_level = 0`) |
+
+Базовая двухконтурная модель (`tenant_id` + `access_level` + RLS) — **всегда включена** и не гейтится флагом (см. [`storage_schema.md`](./storage_schema.md) §2.3–§2.4, [`modules_spec.md`](./modules_spec.md)).
 
 ### 3.2. Режимы лицензии и двухконтурная валидация:
 1. **Режим `airgap_enterprise` (Изолированный контур)**:

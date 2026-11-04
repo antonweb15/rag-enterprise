@@ -113,6 +113,7 @@
 | `DELETE` | `/documents/{id}` | — | `204` | Каскадное удаление: объект в сторадже + `documents` + parent/child чанки + векторы |
 | `POST` | `/documents/{id}/reindex` | — | `DocumentListItem` | Принудительная переиндексация (сброс статуса в `pending`) |
 | `GET` | `/documents/{id}/chunks` | `?include_vectors=false&chunk_id=` | `List[ChunkView]` | Просмотр parent/child структуры; векторы — только явным флагом |
+| `PATCH` | `/documents/{id}/access-level` | `{access_level}` | `DocumentListItem` | **Ре-классификация**: смена уровня документа; каскад в parent/child транзакционно (триггер `cascade_access_level`) |
 | `GET` | `/license/status` | — | `LicenseStatus` | Срок, план, лимиты, статус онлайн/офлайн-валидации, Restricted Mode |
 | `POST` | `/license/activate` | `LicenseActivationRequest` | `LicenseStatus` | Активация по коду, `.key`-файлу или PASETO-токену |
 | `GET` | `/license/machine-fingerprint` | — | `MachineFingerprint` | `hardware_id` инсталляции для выпуска привязанной лицензии |
@@ -122,10 +123,41 @@
 | `GET` | `/audit-log` | `?actor=&action=&page=` | `Page[AuditLogEntry]` | Журнал действий: кто, когда, что, IP, User-Agent |
 | `POST` | `/playground/retrieve` | `{query, access_level}` | `List[RetrievalCandidate]` | Диагностика retrieval: dense/sparse ранги, RRF, rerank |
 
+**Эндпоинты управления доступом** (см. §5A; часть гейтится флагом лицензии `enterprise_acl`):
+
+| Метод | Путь | Запрос | Ответ | Назначение |
+|---|---|---|---|---|
+| `GET`/`POST`/`PATCH`/`DELETE` | `/users` | `{channel, channel_user_id, access_level, is_active}` | `Page[...]` / `User` | CRUD конечных пользователей и выдача уровня допуска |
+| `GET`/`POST`/`DELETE` | `/groups` | `{name, access_level, external_ref}` | `Page[Group]` / `Group` | CRUD групп (`enterprise_acl`) |
+| `POST`/`DELETE` | `/groups/{id}/members` | `{user_id}` | `204` | Членство пользователей в группе (`user_groups`) |
+| `GET`/`POST`/`DELETE` | `/collections` | `{name, access_level, parent_id}` | `Page[Collection]` / `Collection` | CRUD коллекций/баз знаний (`collections`) |
+| `POST`/`DELETE` | `/documents/{id}/acl` | `DocumentAclEntry` (`principal_type`, `principal_id`, `permission`) | `204` | Грант/отзыв точечного ACL (`enterprise_acl`) |
+
 **Общие правила:**
 - Все эндпоинты требуют валидную сессионную cookie + роль; небезопасные методы — ещё и CSRF-токен.
 - Все мутации пишут запись в `audit_log` в той же транзакции.
 - Ошибки — в едином формате `{ "detail": {...}, "code": "..." }`; внутренние трейсы наружу не отдаются.
+
+---
+
+## 5A. Управление доступом (разделение прав)
+
+Раздел доступен только роли `admin` (см. §4.2). Все мутации пишутся в `audit_log` в той же транзакции.
+
+### 5A.1. Базовый уровень (всегда доступен)
+
+- **Ре-классификация документа**: UI смены `access_level` (0–3) у существующего документа (`PATCH /documents/{id}/access-level`). Смена уровня **каскадно и транзакционно** переписывает `parent_chunks.access_level`/`child_chunks.access_level` (триггер `cascade_access_level`, см. [`storage_schema.md`](./storage_schema.md) §2.3). До завершения синхронизации документ трактуется fail-closed.
+- **CRUD конечных пользователей и выдача допуска**: создание/блокировка записей `users` тенанта и установка их `access_level` (`/users`). Уровень хранится в БД и пересчитывается на бэкенде; клиент его не задаёт.
+
+### 5A.2. Enterprise-слой (за флагом лицензии `enterprise_acl`/`collections`)
+
+- **Группы**: CRUD `groups` + управление членством (`user_groups`); группа может маппиться на IdP (`external_ref`).
+- **Коллекции (базы знаний)**: CRUD `collections` + привязка документов (`document_collections`).
+- **Точечный ACL**: грант/отзыв `document_acl` для `user`/`group` (`/documents/{id}/acl`). Грант/отзыв вступает в силу **немедленно** (следующий запрос уже видит изменение, без кэш-лага).
+
+### 5A.3. Аудит
+
+Каждая мутация прав пишет `audit_log` с `action` из набора: `document.reclassify`, `user.create`/`user.update`/`user.disable`, `acl.grant`/`acl.revoke`, `group.create`/`group.delete`, `group.member.add`/`group.member.remove`, `collection.create`/`collection.delete`. Запись — в той же транзакции, что и сама мутация.
 
 ---
 

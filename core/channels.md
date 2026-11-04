@@ -108,16 +108,19 @@
 
 ### 5.3. Двухэтапный Session Handshake
 
-Контракт — `WebWidgetSessionRequest` / `WebWidgetSessionResponse` в [`modules_spec.md`](./modules_spec.md).
+Контракт — `WebWidgetSessionRequest` / `WebWidgetSessionResponse` в [`modules_spec.md`](./modules_spec.md). Поддерживаются **два режима** (`auth_mode`): `anonymous` (по умолчанию) и `oidc` (аутентифицированный, за флагом лицензии `sso_oidc`).
 
 1. **Инициализация сессии**:
-   - Виджет выполняет `POST /api/v1/widget/session` с телом `{ "slug": "company-slug" }`.
+   - Виджет выполняет `POST /api/v1/widget/session` с телом `{ "slug": "company-slug", "auth_mode": "anonymous" | "oidc", "id_token": <опционально> }`.
    - Бэкенд проверяет заголовок `Origin` против строгого allowlist `tenants.allowed_origins` (**без wildcard `*`**; дефолт в БД — `'[]'`, см. [`storage_schema.md`](./storage_schema.md)).
-   - В таблице `users` создаётся/находится анонимный пользователь `channel = 'web'`, `access_level = 0 (Public)`.
-   - Бэкенд возвращает короткоживущий подписанный session JWT (TTL = 1 час), привязанный к `tenant_id` и `session_id`.
+   - **`anonymous`**: в таблице `users` создаётся/находится анонимный пользователь `channel = 'web'`, `access_level = 0 (Public)`. Конфиденциальные документы на виджете недоступны в принципе.
+   - **`oidc`** (опционально, Этап C): виджет передаёт `id_token` (OIDC) / SAML-assertion; бэкенд **верифицирует подпись** против IdP (`oidc_issuer`/`oidc_jwks_url`, см. `Settings.oidc_*` в [`modules_spec.md`](./modules_spec.md)), извлекает `subject` и группы (`oidc_groups_claim`), находит/создаёт `users` с `external_subject` и маппит группы IdP на `groups` (`external_ref`). Итоговый `access_level`/`group_ids` **пересчитываются на бэкенде** из БД/проверенного claim — **никогда** не берутся из тела запроса клиента.
+   - Бэкенд возвращает короткоживущий подписанный session JWT (TTL = 1 час), привязанный к `tenant_id` и `session_id` (для `oidc` — ещё `subject + groups` внутри JWT).
 2. **Потоковый чат (SSE)**:
    - `POST /api/v1/chat/stream` принимает `Authorization: Bearer <session_jwt>`.
    - Жёсткий per-tenant Rate Limiting на уровне middleware (по IP и session-токену).
+
+> **Box**: IdP — локальный каталог клиента (`data-api-url` указывает на коробку; OIDC/SCIM или CSV-импорт групп для air-gapped). **Cloud**: мультитенантный OIDC, `oidc_*` настраиваются per-tenant. Инвариант «авторизация никогда не на клиенте» распространяется и на `access_level`/claims.
 
 ### 5.4. Hardening (обязательно)
 

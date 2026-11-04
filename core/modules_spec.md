@@ -157,11 +157,16 @@ class TenantContext(BaseModel):
 
 class WebWidgetSessionRequest(BaseModel):
     slug: str
+    auth_mode: Literal["anonymous", "oidc"] = "anonymous"   # Этап C: 'oidc' требует валидного id_token/assertion
+    id_token: Optional[str] = None                          # OIDC id_token / SAML assertion (проверяется на бэкенде)
 
 class WebWidgetSessionResponse(BaseModel):
     session_token: str
     tenant_id: UUID
     expires_in: int = 3600
+    auth_mode: Literal["anonymous", "oidc"] = "anonymous"
+    # Для 'oidc': subject + groups кладутся в session_token (JWT) на бэкенде после верификации IdP;
+    # итоговый access_level пересчитывается из групп/пользователя, а не из claim клиента.
 
 # --- Модели пользователей и контекста ---
 class UserContext(BaseModel):
@@ -170,6 +175,10 @@ class UserContext(BaseModel):
     channel_user_id: str
     channel: ChannelType = ChannelType.TELEGRAM
     access_level: AccessLevel = AccessLevel.PUBLIC
+    group_ids: List[UUID] = Field(default_factory=list)   # членство в группах (Этап B, enterprise_acl); пусто при выключенном флаге
+    external_subject: Optional[str] = None                # субъект из IdP (OIDC/SAML 'sub'), NULL для локальных/анонимных
+    # ВАЖНО (инвариант): access_level/group_ids ВСЕГДА пересчитываются на бэкенде из БД (users/user_groups)
+    # и/или проверенного IdP-claim; НИКОГДА не берутся из тела запроса или payload клиента.
     # Обратная совместимость: str-enum парсит старые строковые литералы ('telegram'/'web')
     # на переходный период. Legacy-значение 'fastapi' в БД мигрируется в 'rest_sse' (backfill),
     # т.к. str-enum его не распарсит. Новый код обязан использовать ChannelType.
@@ -193,6 +202,7 @@ class ParentChunk(BaseModel):
     content: str
     token_count: int
     chunk_index: int
+    access_level: AccessLevel = AccessLevel.PUBLIC   # денормализован из documents (каскад); defense-in-depth при прямом запросе parent-контента (гидрация)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 class ChildChunk(BaseModel):
@@ -231,6 +241,51 @@ class RAGResponse(BaseModel):
     citations: List[GenerationCitation] = Field(default_factory=list)
     confidence_passed: bool = True
     trace_id: Optional[str] = None
+
+# --- Модели контроля доступа: группы / коллекции / ACL (Этап B, за флагом enterprise_acl) ---
+# Соответствуют таблицам groups/collections/document_acl (см. core/storage_schema.md §2.4).
+class AclPermission(str, Enum):
+    READ = "read"                              # enum заложен на расширение: 'write'/'manage'/...
+
+class PrincipalType(str, Enum):
+    USER = "user"
+    GROUP = "group"
+
+class Group(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    tenant_id: UUID
+    name: str
+    access_level: AccessLevel = AccessLevel.PUBLIC         # базовый уровень допуска группы
+    external_ref: Optional[str] = None                     # id группы в IdP (OIDC/SAML/SCIM), NULL для локальных
+
+class Collection(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    tenant_id: UUID
+    name: str
+    access_level: AccessLevel = AccessLevel.PUBLIC
+    parent_id: Optional[UUID] = None                       # иерархия коллекций (базы знаний/папки)
+
+class DocumentAclEntry(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    tenant_id: UUID
+    document_id: UUID
+    principal_type: PrincipalType
+    principal_id: UUID                                     # users.id | groups.id (по principal_type)
+    permission: AclPermission = AclPermission.READ
+    granted_by: Optional[UUID] = None                     # users.id администратора (аудит)
+
+class AccessDecision(BaseModel):
+    """Результат вычисления эффективного доступа субъекта к ресурсам.
+
+    ВАЖНО: для RAG основной контракт — НЕ bool, а МНОЖЕСТВО/ПРЕДИКАТ разрешённых ресурсов,
+    применяемый ДО top-k/RRF (иначе пост-фильтр ломает ранжирование и RRF).
+    - effective_access_level — максимальный уровень из user.access_level и его групп (primary-фильтр).
+    - allowed_document_ids — явный allowlist из ACL (объединяется с уровневым фильтром по ИЛИ).
+    - denied_document_ids — явные запреты (имеют приоритет; fail-closed при конфликте).
+    """
+    effective_access_level: AccessLevel = AccessLevel.PUBLIC
+    allowed_document_ids: Optional[List[UUID]] = None      # None => фильтр только по уровню (ACL отключён/пуст)
+    denied_document_ids: List[UUID] = Field(default_factory=list)
 
 # --- Модели админ-панели (см. core/admin_panel.md) ---
 class AdminConfig(BaseModel):
@@ -489,6 +544,8 @@ class Settings(BaseSettings):
     rrf_beta: float = 0.4
     confidence_threshold: float = 0.35
     max_history_turns: int = 5
+    generation_temperature: float = 0.1   # детерминированность/фактологичность RAG; рекомендуемо <= 0.3
+    generation_max_tokens: int = 1024     # лимит токенов ответа LLM
 
     # Channels (см. core/channels.md)
     telegram_bot_token: Optional[str] = None      # по умолчанию ОДИН общий бот; свой бот на тенанта — платная опция
@@ -523,6 +580,14 @@ class Settings(BaseSettings):
     trace_mask_fields: List[str] = Field(default_factory=lambda: ["password", "api_key", "token"])
     telemetry_opt_out: bool = True                       # 152-ФЗ/GDPR: по умолчанию телеметрия выключена
     telemetry_forward_enabled: bool = False              # форвард обезличенных метрик/трейсов из Box вендору (opt-in)
+
+    # Identity / SSO конечного пользователя (Этап C; gated фичей лицензии sso_oidc, см. core/licensing_and_distribution.md)
+    oidc_enabled: bool = False                           # включение authenticated-режима виджета
+    oidc_issuer: Optional[str] = None                    # URL IdP (OIDC discovery)
+    oidc_client_id: Optional[str] = None
+    oidc_client_secret: Optional[str] = None
+    oidc_jwks_url: Optional[str] = None                  # для офлайн-проверки подписи id_token
+    oidc_groups_claim: str = "groups"                    # имя claim со списком групп в id_token
 ```
 
 ---
@@ -585,6 +650,25 @@ class BaseTenantResolver(ABC):
         """Проверка текущего потребления ресурсов тенантом против установленных лимитов."""
         pass
 
+# --- 2.0.2. Policy Decision Point (единая точка решения о доступе; Этап B/D) ---
+class BasePolicyEvaluator(ABC):
+    """Единый PDP (Policy Decision Point): вычисляет эффективный доступ субъекта.
+    Вызывается ДО поиска (Retriever/VectorStore), на гидрации parent-контента
+    и в citation-resolver (ре-проверка цитат). Возвращает НЕ bool, а предикат/множество
+    разрешённых ресурсов, чтобы сохранить корректность top-k/RRF (см. AccessDecision).
+    При выключенном флаге enterprise_acl учитывается только user.access_level (ACL/группы игнорируются)."""
+
+    @abstractmethod
+    async def effective_access(self, user: UserContext) -> AccessDecision:
+        """Эффективное право = f(user.access_level, group.access_level, ACL allow/deny).
+        effective_access_level = max(user.access_level, max(group.access_level))."""
+        pass
+
+    @abstractmethod
+    async def can_access_document(self, user: UserContext, document_id: UUID) -> bool:
+        """Точечная проверка (используется для ре-проверки цитат/parent-гидрации). fail-closed."""
+        pass
+
 # --- 2.0.1. Storage Ports (сменные реализации) ---
 class VectorStoreCapabilities(BaseModel):
     supports_sparse: bool = True
@@ -608,16 +692,21 @@ class BaseVectorStore(ABC):
 
     @abstractmethod
     async def search_dense(
-        self, tenant_id: UUID, query_dense: List[float], k: int = 30, user_access_level: int = 0
+        self, tenant_id: UUID, query_dense: List[float], k: int = 30, user_access_level: int = 0,
+        allowed_document_ids: Optional[List[UUID]] = None
     ) -> List[RetrievalCandidate]:
-        """Плотное плечо: Top-k по косинусному расстоянию с фильтром tenant_id и access_level."""
+        """Плотное плечо: Top-k по косинусному расстоянию с фильтром tenant_id и access_level.
+        При enterprise_acl allowed_document_ids (из AccessDecision) применяется как доп. предикат
+        ДО LIMIT k — не пост-фильтром, чтобы не ломать top-k/RRF."""
         pass
 
     @abstractmethod
     async def search_sparse(
-        self, tenant_id: UUID, query_sparse: Dict[int, float], k: int = 30, user_access_level: int = 0
+        self, tenant_id: UUID, query_sparse: Dict[int, float], k: int = 30, user_access_level: int = 0,
+        allowed_document_ids: Optional[List[UUID]] = None
     ) -> List[RetrievalCandidate]:
-        """Лексическое плечо (sparsevec / BM25). Если supports_sparse=False — возвращает пустой список."""
+        """Лексическое плечо (sparsevec / BM25). Если supports_sparse=False — возвращает пустой список.
+        allowed_document_ids применяется так же, как в search_dense (предикат до LIMIT)."""
         pass
 
     @abstractmethod
@@ -678,9 +767,12 @@ class BaseIntentRouter(ABC):
 class BaseRetriever(ABC):
     @abstractmethod
     async def retrieve(
-        self, query: str, tenant_id: UUID, user_access_level: int = 0, top_k: int = 30
+        self, query: str, tenant_id: UUID, user_access_level: int = 0, top_k: int = 30,
+        allowed_document_ids: Optional[List[UUID]] = None
     ) -> List[RetrievalCandidate]:
-        """Гибридный поиск Dense + Sparse с RRF слиянием и изоляцией по tenant_id."""
+        """Гибридный поиск Dense + Sparse с RRF слиянием и изоляцией по tenant_id.
+        user_access_level и allowed_document_ids берутся из AccessDecision (PolicyEvaluator),
+        рассчитанного на бэкенде; клиент их не передаёт."""
         pass
 
 class Retriever(BaseRetriever):
@@ -727,11 +819,13 @@ class BaseLLM(ABC):
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
-        temperature: float = 0.1,
-        max_tokens: int = 1024,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
         response_format: Literal["text", "json_object"] = "text",
     ) -> str:
-        """Генерация полного текста или валидного JSON."""
+        """Генерация полного текста или валидного JSON.
+        При temperature/max_tokens=None берутся settings.generation_temperature
+        и settings.generation_max_tokens (единый источник значений, без хардкода)."""
         pass
 
     @abstractmethod
@@ -739,10 +833,12 @@ class BaseLLM(ABC):
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
-        temperature: float = 0.1,
-        max_tokens: int = 1024,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
-        """Потоковая генерация токенов (Token Stream)."""
+        """Потоковая генерация токенов (Token Stream).
+        При temperature/max_tokens=None берутся settings.generation_temperature
+        и settings.generation_max_tokens."""
         pass
 
 # --- 2.5. Document Source Interface ---

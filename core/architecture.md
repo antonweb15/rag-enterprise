@@ -96,9 +96,10 @@
 ## 2. Жизненный цикл обработки запроса (Query Flow)
 
 1. **Входное событие** (канало-нейтрально): адаптер канала (Web Widget / Telegram / REST-SSE / CLI) нормализует нативное сообщение в `ChannelEvent` (`event_type`, `user_id`, `tenant_id`, `channel`, `channel_user_id`, `text`, `payload`). Retrieval-ядро принимает **только** `ChannelEvent` и не знает о конкретном канале (см. [`channels.md`](./channels.md), [`modules_spec.md`](./modules_spec.md)).
-2. **Аутентификация & RBAC**:
-   - `channel_user_id` (внешний ID канала) сверяется с таблицей `users` (или кэшем сессии).
-   - Извлекается авторизованный `user_access_level` (по умолчанию `0: Public`).
+2. **Аутентификация, Resolution субъекта & вычисление эффективного доступа**:
+   - `channel_user_id` (внешний ID канала) сверяется с таблицей `users` (или кэшем сессии); для authenticated-виджета — субъект из проверенного OIDC/SAML (`external_subject`, см. [`channels.md`](./channels.md)).
+   - **Resolution субъекта**: собирается `UserContext` (`access_level` + `group_ids`), значения берутся **с бэкенда** (`users`/`user_groups`/IdP-claim), **никогда** из payload клиента.
+   - **PolicyEvaluator.effective_access(user) → `AccessDecision`**: единая точка решения (PDP) вычисляет `effective_access_level = max(user, groups)` и, при включённом `enterprise_acl`, `allowed_document_ids` (из `document_acl`). При выключенном флаге — чистый `access_level`. fail-closed: нет тенанта/уровня → пустая выборка.
 3. **Rate Limiting**: `ThrottlingMiddleware` проверяет лимит (не более 5 сообщений в минуту на `user_id`).
 4. **Intent Routing**:
    - `chit_chat` $\to$ быстрый ответ легковесной LLM без обращения к БД.
@@ -112,14 +113,15 @@
 7. **Гибридный поиск (`BaseVectorStore` + `Retriever`)**:
    - Вызываются **раздельные плечи контракта**: `BaseVectorStore.search_dense(...)` и `BaseVectorStore.search_sparse(...)`.
    - Слияние выполняется **в application-layer** (`Retriever.fuse_rrf`), а не в SQL. SQL-функция `hybrid_search_rrf` — внутренняя оптимизационная деталь `PgVectorStore`, используемая только при `capabilities.supports_hybrid_rrf = True`.
-   - Первичный фильтр `WHERE d.access_level <= user_access_level` исключает недоступные документы.
+   - Первичный фильтр `WHERE d.access_level <= user_access_level` исключает недоступные документы; при `enterprise_acl` дополнительно применяется предикат `allowed_document_ids` из `AccessDecision` — **до** `LIMIT`/RRF (не пост-фильтром), чтобы не ломать top-k и ранжирование.
    - Находятся Top-30 кандидатов по косинусному расстоянию (HNSW) и Top-30 по sparsevec, объединяясь по формуле RRF:
      $$RRF(d) = \frac{0.6}{60 + r_{dense}(d)} + \frac{0.4}{60 + r_{sparse}(d)}$$
 8. **Реранкинг (FlashRank)**:
    - Полученные Top-30 чанков переранжируются Cross-Encoder моделью.
    - **Confidence Gate**: Если $\max(score) < 0.35$, поиск прерывается, пользователю возвращается сообщение об отсутствии информации.
-9. **Small-to-Big Hydration**:
+9. **Small-to-Big Hydration + ре-проверка доступа**:
    - По `parent_id` отобранных лучших child-чанков (Top 3–5) загружается полный текст соответствующих `parent_chunks`.
+   - **Ре-проверка эффективного доступа (defense-in-depth)**: гидратор и citation-resolver обязаны повторно проверить каждый `parent_chunk`/цитату через `PolicyEvaluator.can_access_document(...)` (используется денормализованный `parent_chunks.access_level` + ACL). Это закрывает прямой доступ к parent-контенту в обход child-фильтра; недоступные цитаты/секции отбрасываются.
    - Устраняются дубликаты родительских секций.
 10. **Сборка промпта и Выход** (канало-нейтрально):
    - Формируется защищённый контекст внутри `<untrusted_doc_context>`.
