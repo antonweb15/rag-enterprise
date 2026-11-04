@@ -99,8 +99,10 @@ def test_watermark_identifies_source_via_registry() -> None:
     leaked = embed_watermark("утёкший ответ", rec_a.fingerprint)
     found = extract_watermark(leaked)
     assert found is not None
-    assert registry.identify(found) == rec_a
-    assert registry.identify(found).client_id == "company_abc"
+    identified = registry.identify(found)
+    assert identified is not None
+    assert identified == rec_a
+    assert identified.client_id == "company_abc"
 
 
 # --------------------------------------------------------------------------- #
