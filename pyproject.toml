@@ -51,6 +51,7 @@ indent-style = "space"
 # ----------------------------------------------------------------------------
 [tool.mypy]
 python_version = "3.11"
+mypy_path = "packages"
 strict = true
 warn_unused_configs = true
 warn_redundant_casts = true
@@ -68,6 +69,7 @@ files = ["tests"]
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
+pythonpath = ["packages"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
