@@ -206,6 +206,12 @@
   - `rag-admin license status`
   - `rag-admin ingest --path ./data --access-level 0`
   - `rag-admin documents list|delete|reindex`
+  - **Контракт CLI-дублёра** (чтобы «недоделка» не разошлась с REST):
+    - CLI вызывает **те же** сервисные функции, что и REST-роутеры админки (общий backend-слой), — никакой параллельной бизнес-логики.
+    - Коды выхода: `0` — успех; `1` — ошибка валидации/ввода; `2` — ошибка лицензии (невалидна/истекла/`Restricted Mode`); `3` — внутренняя ошибка.
+    - Формат вывода: человекочитаемый по умолчанию; `--json` отдаёт те же Pydantic-модели, что и REST (`LicenseStatus`, `IngestQueueItem`, `DashboardStats`), сериализованные в JSON.
+    - Квоты и `access_level` проверяются на бэкенде (`enforce_quota`, PDP) идентично REST; CLI не обходит проверки.
+    - Каждая мутация пишет `audit_log` (actor = локальный CLI-оператор) так же, как из UI.
 - **Widget vs Admin**: один код, но **разные `--app` / воркер-пулы и разные rate-limit политики**. Публичный высоконагруженный виджет не должен ронять приватную админку; структура готова к `docker compose scale widget=N` без рефакторинга.
 - **SaaS**: SPA отдаётся Nginx/CDN, API — отдельным сервисом; **Box**: SPA отдаётся FastAPI как `StaticFiles` из одного контейнера.
 

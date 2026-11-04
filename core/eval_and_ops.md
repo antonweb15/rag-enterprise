@@ -239,12 +239,13 @@ volumes:
 
 ## 4. CI/CD Пайплайн (GitHub Actions & Protected Box Distribution)
 
-Workflow-файл `.github/workflows/ci.yml`:
-1. **Lint & Static Check**: `ruff check .` и `mypy services/ packages/` (строгая проверка без проглатывания ошибок).
+Workflow-файл `.github/workflows/ci.yml` (реализован в репозитории; CI пинится на Python 3.11):
+1. **Lint & Format & Static Check**: `ruff check .`, `ruff format --check .` (форматирование проверяется, а не только линт) и `mypy` (строгая проверка без проглатывания ошибок; по мере появления кода цель — `mypy services/ packages/`). ⛔ Запрещены «заглушки» вида `ruff check . || echo ok` — шаг обязан падать при ошибках.
 2. **Unit & Integration Tests**: `pytest tests/ -v` (проверка изоляции тенантов, валидации токенов Ed25519, RRF и S3 коннектора).
 3. **Evaluation Gate**: Запуск `python -m tests.eval_ragas` — проверка, что метрики качества на `golden_dataset.json` не деградировали ниже допустимого порога SLO.
 4. **On-Premise Core Protection & Image Release** (при тегах `v*`):
    - Компиляция модулей ядра (`rag_core/licensing/`, `rag_core/retrieval/`) в `.so` через Cython/PyArmor.
    - Сборка закрытого Docker-образа `rag-core:enterprise-vX.Y`.
    - Публикация в приватный GitHub Container Registry (`ghcr.io/your-org/rag-core`).
+   > **Честная оценка границ защиты.** Компиляция в `.so`/обфускация — это лишь *повышение стоимости* реверса, а НЕ надёжная защита IP: образ всё равно исполняется у клиента и содержит достаточно артефактов для анализа. Реальную защиту обеспечивают **(а) водяные знаки/канареечные метки для атрибуции утечки** (см. `core/licensing_and_distribution.md` §4a) и **(б) юридический контур** (лицензионный договор, подписанные токены Ed25519, CRL, heartbeat-детекция клонирования), а не бинарная обфускация.
 5. **Secrets**: Управление конфиденциальными переменными (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `LICENSE_SIGNING_KEY`, `JWT_SECRET`, `GROQ_API_KEY`, `TELEGRAM_BOT_TOKEN`) строго через **GitHub Actions Secrets**.

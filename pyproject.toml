@@ -17,14 +17,27 @@ dev = [
     "pytest-asyncio>=0.23",
 ]
 
+# PEP 517/518 build backend. На Фазе 1–2 сборка wheel не выполняется (CI гоняет
+# только ruff/mypy/pytest), секция объявлена для корректной установки в editable-режиме
+# (`pip install -e .[dev]`) и воспроизводимого тулинга.
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# На Фазе 1–2 устанавливаемых пакетов ещё нет (код живёт в packages/ как исходники,
+# подключаемые через pythonpath/mypy_path). Явно отключаем авто-обнаружение пакетов
+# setuptools, чтобы `pip install -e .[dev]` не падал на «Multiple top-level packages».
+[tool.setuptools]
+py-modules = []
+
 # ----------------------------------------------------------------------------
 # Ruff — линтер и форматтер
 # ----------------------------------------------------------------------------
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-# По мере появления прикладного кода добавятся каталоги services/ packages/.
-src = ["tests", "services", "packages"]
+# По мере появления прикладного кода каталог services/ добавится в src.
+src = ["tests", "packages"]
 
 [tool.ruff.lint]
 select = [

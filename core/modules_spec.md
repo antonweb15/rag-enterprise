@@ -46,6 +46,19 @@ class DeploymentMode(str, Enum):
     SAAS_CLOUD = "saas_cloud"
     ON_PREMISE_BOX = "on_premise_box"
 
+class LicensePlan(str, Enum):
+    """Канонический набор планов лицензии. Единый источник истины для DDL
+    (licenses.plan CHECK) и всех Pydantic-моделей; дефолт — STANDARD."""
+    STANDARD = "standard"
+    PRO = "pro"
+    ENTERPRISE_BOX = "enterprise_box"
+
+class LicenseMode(str, Enum):
+    """Режим лицензии: онлайн-подписка (heartbeat) vs air-gapped enterprise-box
+    (offline-валидация + grace-период). Персистится в licenses.mode."""
+    ONLINE_SUBSCRIPTION = "online_subscription"
+    AIRGAP_ENTERPRISE = "airgap_enterprise"
+
 # --- Каналы доставки (см. core/channels.md) ---
 class ChannelType(str, Enum):
     WEB_WIDGET = "web"          # основной интерфейс конечного пользователя (Shadow DOM, white-label)
@@ -133,10 +146,13 @@ class BrandingConfig(BaseModel):
 
 # --- Модели лицензирования и тенантов ---
 class LicensePayload(BaseModel):
+    # license_id канонически — UUID; в подписанном токене (JWT/PASETO) он несётся
+    # как его строковая форма (claim), поэтому тип здесь str. В БД (licenses.id,
+    # LicenseStatus/LicenseRevokeRequest/HeartbeatPayload) — UUID. См. licensing_and_distribution.md §2.
     license_id: str
     client_id: str
-    plan: str = "enterprise_box"
-    mode: str = "online_subscription"          # 'online_subscription' | 'airgap_enterprise'
+    plan: LicensePlan = LicensePlan.STANDARD
+    mode: LicenseMode = LicenseMode.ONLINE_SUBSCRIPTION
     issued_at: datetime
     expires_at: Optional[datetime] = None      # None для бессрочных On-Premise лицензий
     max_documents: int = 1000
@@ -344,8 +360,8 @@ class MachineFingerprint(BaseModel):
 class LicenseStatus(BaseModel):
     """Источник истины по лицензии — только бэкенд. Фронт отображает этот объект как есть."""
     is_valid: bool
-    plan: str
-    mode: str                                           # 'online_subscription' | 'airgap_enterprise'
+    plan: LicensePlan
+    mode: LicenseMode
     issued_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
     max_documents: int = 0
@@ -420,7 +436,7 @@ class ActivationCode(BaseModel):
     code: str                                           # 'RAG-ENT-XXXX-YYYY-ZZZZ'
     customer_id: UUID
     order_id: Optional[UUID] = None
-    plan: str
+    plan: LicensePlan
     status: ActivationCodeStatus = ActivationCodeStatus.ISSUED
     redeemed_by_tenant_id: Optional[UUID] = None
     expires_at: Optional[datetime] = None
@@ -431,7 +447,8 @@ class LicenseIssueRequest(BaseModel):
     Подпись — только offline Ed25519-ключом signing-сервиса, см. core/license_server.md."""
     customer_id: UUID
     tenant_id: UUID
-    plan: str
+    plan: LicensePlan = LicensePlan.STANDARD
+    mode: LicenseMode = LicenseMode.ONLINE_SUBSCRIPTION
     max_documents: int = 1000
     max_users: int = 10
     expires_at: Optional[datetime] = None               # None => бессрочная box-лицензия
@@ -579,7 +596,7 @@ class Settings(BaseSettings):
     trace_retention_days: int = 30
     trace_mask_fields: List[str] = Field(default_factory=lambda: ["password", "api_key", "token"])
     telemetry_opt_out: bool = True                       # 152-ФЗ/GDPR: по умолчанию телеметрия выключена
-    telemetry_forward_enabled: bool = False              # форвард обезличенных метрик/трейсов из Box вендору (opt-in)
+    observability_forward_enabled: bool = False          # КАНОНИЧЕСКОЕ имя флага: форвард обезличенных метрик/трейсов из Box вендору (opt-in). Прежнее имя telemetry_forward_enabled — устаревший alias, использовать НЕЛЬЗЯ.
 
     # Identity / SSO конечного пользователя (Этап C; gated фичей лицензии sso_oidc, см. core/licensing_and_distribution.md)
     oidc_enabled: bool = False                           # включение authenticated-режима виджета
@@ -635,7 +652,7 @@ class BaseLicenseServer(ABC):
         pass
 
     @abstractmethod
-    async def generate_activation_code(self, customer_id: UUID, plan: str) -> ActivationCode:
+    async def generate_activation_code(self, customer_id: UUID, plan: LicensePlan) -> ActivationCode:
         """Генерация кода 'RAG-ENT-XXXX-YYYY-ZZZZ' под заказ/клиента."""
         pass
 

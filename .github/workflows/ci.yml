@@ -1,65 +1,44 @@
-name: CI & Tests
-
-# Целевой пайплайн описан в core/eval_and_ops.md §4 (5 шагов):
-#   1. Lint & Static Check   — ruff + mypy            (реализовано ниже)
-#   2. Unit & Integration    — pytest                 (реализовано ниже)
-#   3. Evaluation Gate       — python -m tests.eval_ragas  (Фаза 3+, нужен рантайм + golden_dataset.json)
-#   4. Core Protection & Image Release (теги v*)       — Cython/PyArmor + ghcr.io  (Фаза 4+)
-#   5. Secrets               — через GitHub Actions Secrets
-# Текущее состояние репо (Фаза 1–2): есть только tests/, поэтому активны шаги 1–2.
-# Конфигурация ruff/mypy/pytest вынесена в pyproject.toml.
+name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main]
   pull_request:
-    branches: [ main, master ]
+    branches: [main]
+
+# Отменяем устаревшие запуски на том же ref (экономия раннеров).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  lint-and-typecheck:
-    name: Lint & Typecheck
+  quality:
+    name: Lint, Format, Types, Tests
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
 
-      - name: Install Linting Tools
+      - name: Install dev tooling
         run: |
           python -m pip install --upgrade pip
-          pip install ruff mypy pytest
+          pip install -e ".[dev]"
 
-      - name: Run Ruff (Linter & Formatter check)
-        run: |
-          python -m ruff check .
+      # ⛔ Никаких `|| echo ok`: каждый шаг обязан падать при ошибке.
+      - name: Ruff lint
+        run: ruff check .
 
-      # Целевой scope (core/eval_and_ops.md §4) — `mypy services/ packages/`.
-      # На Фазе 1–2 в репо есть только tests/, поэтому scope задан в pyproject.toml ([tool.mypy] files).
-      - name: Run Mypy (Typecheck)
-        run: |
-          python -m mypy
+      - name: Ruff format check
+        run: ruff format --check .
 
-  tests:
-    name: Unit & Integration Tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Mypy (strict)
+        run: mypy
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio
-
-      - name: Run pytest
-        run: |
-          python -m pytest -v
+      - name: Pytest
+        run: pytest -q

@@ -101,6 +101,7 @@ logs/
 *.log
 langfuse_cache/
 
-# Local Specs & Drafts
-SPECIFICATION.md
+# Local Drafts
+# ВНИМАНИЕ: SPECIFICATION.md — ключевой версионируемый документ (обзорный blueprint),
+# НЕ игнорируется. Ниже — только внутренний ревью-черновик вендора.
 deepseek-criticism.md

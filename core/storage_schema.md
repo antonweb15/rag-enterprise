@@ -54,7 +54,10 @@ CREATE TABLE IF NOT EXISTS licenses (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
     license_key TEXT NOT NULL UNIQUE,                 -- подписанный Ed25519 токен лицензии
-    plan TEXT NOT NULL DEFAULT 'standard',            -- 'standard', 'pro', 'enterprise_box'
+    plan TEXT NOT NULL DEFAULT 'standard'             -- канонический enum LicensePlan (modules_spec.md)
+        CHECK (plan IN ('standard', 'pro', 'enterprise_box')),
+    mode TEXT NOT NULL DEFAULT 'online_subscription'  -- канонический enum LicenseMode: персистентность режима лицензии
+        CHECK (mode IN ('online_subscription', 'airgap_enterprise')),
     issued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at TIMESTAMPTZ,                           -- срок окончания действия лицензии (NULL для бессрочных On-Premise)
     max_documents INTEGER NOT NULL DEFAULT 1000,
