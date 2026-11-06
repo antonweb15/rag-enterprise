@@ -53,10 +53,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Версию pnpm берём из поля `packageManager` в package.json (pnpm@9.x).
+      # ⛔ Не указываем здесь `version:` — иначе action падает с "Multiple versions
+      # of pnpm specified" (конфликт входа и packageManager).
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - name: Set up Node.js 20
         uses: actions/setup-node@v4
