@@ -256,7 +256,7 @@ rag-enterprise/
   services/
     api/        # FastAPI: admin / chat / widget роутеры, --app на каждый контур
   packages/
-    core/       # Pydantic-модели + интерфейсы (BaseVectorStore, BaseObjectStorage, ...)
+    rag_core/   # Pydantic-модели + интерфейсы (BaseVectorStore, BaseObjectStorage, ...)
   core/         # Markdown-ядро спецификаций (источник истины)
 ```
 

@@ -90,6 +90,10 @@
 
 Базовая двухконтурная модель (`tenant_id` + `access_level` + RLS) — **всегда включена** и не гейтится флагом (см. [`storage_schema.md`](./storage_schema.md) §2.3–§2.4, [`modules_spec.md`](./modules_spec.md)).
 
+> **Единый реестр feature-флагов — `enum LicenseFeature`** ([`modules_spec.md`](./modules_spec.md)): `web_widget`, `telegram`, `rest_sse`, `cli`, `enterprise_acl`, `collections`, `sso_oidc`, `hybrid_search`, `s3_connector`, `flashrank_rerank`, `observability_forward`. Это же множество — единственное допустимое для `licenses.features` (CHECK-констрейнт через `<@`, [`storage_schema.md`](./storage_schema.md)). Иных значений в `features` быть не может.
+>
+> ⚠️ **`observability_forward` vs `observability_forward_enabled`:** `observability_forward` — это **entitlement** (право по лицензии, элемент `features`), а `observability_forward_enabled` — **runtime-переключатель** клиента (`Settings`/`BoxDeployment`). Фактический форвард вендору включается только при одновременном выполнении: entitlement в лицензии **И** `observability_forward_enabled = true` **И** `telemetry_opt_out = false`.
+
 ### 3.2. Режимы лицензии и двухконтурная валидация:
 1. **Режим `airgap_enterprise` (Изолированный контур)**:
    - Полностью автономная работа без исходящих сетевых соединений.

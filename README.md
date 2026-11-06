@@ -11,7 +11,7 @@
 - **Reranker & Confidence Gate**: Фильтрация шума через FlashRank и автоматическая отсечка нерелевантных вопросов при $\max(score) < \tau$ ($\tau=0.35$).
 - **Multi-turn Memory & Condensation**: Полноценный контекстный диалог в Telegram с переформулированием зависимых вопросов в самостоятельные поисковые запросы.
 - **Zero Hallucination & Security**: Изоляция контекста в тегах `<untrusted_doc_context>`, защита от Indirect Prompt Injection и точные сноски на источники `[1]`, `[2]`.
-- **100% Free / Local Stack Ready**: `FastEmbed` BGE-M3 + Groq (`llama-3.3-70b`) / Gemini Free / Ollama + Supabase Cloud.
+- **100% Free / Local Stack Ready**: `FastEmbed` BGE-M3 + Groq (`llama-3.3-70b-versatile`) / Gemini Free / Ollama (`qwen2.5:7b-instruct`) + Supabase Cloud.
 
 ---
 
@@ -22,7 +22,7 @@
 | **Интерфейс** | Web-виджет (Shadow DOM, white-label, основной), Telegram Bot (`aiogram 3.x`), Admin SPA (`/api/v1/admin/*`), расширяемая абстракция `BaseChannel` (`web`/`telegram`/`rest_sse`/`cli`) |
 | **База данных** | PostgreSQL 15+ + `pgvector 0.7+` (Supabase или self-hosted), HNSW, RLS, `sparsevec` |
 | **Эмбеддинги & Реранкинг** | `BAAI/bge-m3` (Dense 1024-dim + Sparse), `FlashRank` |
-| **LLM & Оркестрация** | Groq Cloud (`llama-3.3-70b`), Google Gemini Free, Ollama (`qwen2.5:7b`) |
+| **LLM & Оркестрация** | Groq Cloud (`llama-3.3-70b-versatile`), Google Gemini Free, Ollama (`qwen2.5:7b-instruct`) |
 | **Фоновые задачи & ETL** | `taskiq` + Postgres queue (`taskiq-pg`), `Docling` парсер |
 | **Observability & Eval** | Langfuse Tracing, RAGAS (валидация на золотом датасете) |
 

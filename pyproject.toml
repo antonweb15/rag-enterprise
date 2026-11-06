@@ -58,7 +58,8 @@ select = [
 ignore = []
 
 [tool.ruff.lint.isort]
-known-first-party = ["rag_core", "services", "packages"]
+# services/ пока не существует в src (убран вместе с forward-ref) — вернётся в Фазе 3+ вместе с кодом.
+known-first-party = ["rag_core", "packages"]
 
 [tool.ruff.format]
 quote-style = "double"

@@ -119,7 +119,7 @@ COPY --from=builder /root/.local /root/.local
 ENV PATH=/root/.local/bin:$PATH
 ENV PYTHONUNBUFFERED=1
 
-COPY packages/core/ packages/core/
+COPY packages/rag_core/ packages/rag_core/
 COPY services/api/ services/api/
 
 # Default CMD — generic API-приложение (конкретный --app переопределяется в docker-compose
@@ -230,7 +230,7 @@ volumes:
 
 ## 3.6. Монорепо и тулинг
 
-Структура `apps/admin` + `apps/widget` + `services/api` + `packages/core` обслуживается двумя независимыми тулчейнами:
+Структура `apps/admin` + `apps/widget` + `services/api` + `packages/rag_core` обслуживается двумя независимыми тулчейнами:
 - **Frontend**: `pnpm workspaces` (сборка Vite → `dist/`, который `admin-api` отдаёт как `StaticFiles`).
 - **Backend**: `uv` (или Poetry) workspace для Python-пакетов.
 - **CI**: два пайплайна (front / back) с независимым кэшем зависимостей.

@@ -18,12 +18,33 @@
 ## 2. PostgreSQL DDL Миграция
 
 ```sql
--- 0. Обеспечение совместимости со средой выполнения (создание роли service_role для локального Docker/Postgres)
+-- 0. Обеспечение совместимости со средой выполнения (роли БД)
+-- Трёхролевая модель (единый источник истины, сведён с IMPLEMENTATION_PLAN.md §3.1):
+--   * service_role     — воркеры инжеста, миграции, backoffice-контур; BYPASSRLS (обходит RLS).
+--   * authenticated    — базовая клиентская роль, на которой висят ВСЕ политики изоляции (§4.1).
+--   * app_user         — ВЫДЕЛЕННАЯ роль приложения для user-retrieval БЕЗ BYPASSRLS
+--                        (подключение по POSTGRES_APP_DSN, поле Settings.postgres_app_dsn).
+--                        Является ЧЛЕНОМ authenticated, поэтому наследует политики
+--                        tenant_isolation_* (иначе default-deny -> 0 строк).
+--   Пароль app_user задаётся операционно (ALTER ROLE app_user PASSWORD / секрет), НЕ в миграции.
+--   POSTGRES_DSN (админ: service_role/postgres, BYPASSRLS) для user-retrieval ЗАПРЕЩЁН — обходит RLS.
+-- anon-роль/anon-ключ НЕ используются (доступ к БД по POSTGRES_DSN/POSTGRES_APP_DSN, не через PostgREST).
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'service_role') THEN
         CREATE ROLE service_role BYPASSRLS;
     END IF;
+    -- Роль authenticated в Supabase уже существует; для self-hosted/Docker создаём её (БЕЗ BYPASSRLS).
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticated') THEN
+        CREATE ROLE authenticated NOBYPASSRLS;
+    END IF;
+    -- Выделенная роль приложения для user-retrieval (БЕЗ BYPASSRLS), логин по POSTGRES_APP_DSN.
+    -- Пароль задаётся операционно (секрет), НЕ в миграции.
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_user') THEN
+        CREATE ROLE app_user LOGIN NOBYPASSRLS;
+    END IF;
+    -- КЛЮЧЕВОЕ: app_user наследует все клиентские политики, определённые TO authenticated (§4.1).
+    GRANT authenticated TO app_user;
 END
 $$;
 
@@ -64,7 +85,12 @@ CREATE TABLE IF NOT EXISTS licenses (
     max_users INTEGER NOT NULL DEFAULT 10,
     is_revoked BOOLEAN NOT NULL DEFAULT false,
     hardware_id TEXT,                                 -- привязка к оборудованию для Box версии
-    features JSONB NOT NULL DEFAULT '["hybrid_search"]'::jsonb,
+    -- Канонический реестр фич = enum LicenseFeature (modules_spec.md); дефолт сведён с LicensePayload/LicenseIssueRequest.
+    features JSONB NOT NULL DEFAULT '["hybrid_search", "s3_connector", "flashrank_rerank"]'::jsonb
+        CHECK (
+            jsonb_typeof(features) = 'array'
+            AND features <@ '["web_widget","telegram","rest_sse","cli","enterprise_acl","collections","sso_oidc","hybrid_search","s3_connector","flashrank_rerank","observability_forward"]'::jsonb
+        ),
     last_heartbeat_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -589,7 +615,7 @@ $$;
 SQLAlchemy использует **пул соединений** под одной ролью БД. Без явной установки GUC в начале **каждой** транзакции RLS не сработает, а при переиспользовании соединения значение «протечёт» в соседний запрос. Поэтому установка `app.current_tenant_id` — обязательный системный контракт:
 
 ```python
-# packages/core/db/session.py
+# packages/rag_core/db/session.py
 from sqlalchemy import event, text
 from sqlalchemy.orm import Session
 
@@ -620,8 +646,12 @@ def set_tenant_guc(session: Session, transaction, connection) -> None:
 ### 4.1. Политики изоляции
 
 Для обеспечения безопасности в многоарендной (Multi-Tenant) SaaS и On-Premise среде настраивается двухконтурный RLS:
-1. **Service Role**: служебные процессы (фоновые воркеры Taskiq, CLI миграции) работают под ролью `service_role`.
+1. **Service Role**: служебные процессы (фоновые воркеры Taskiq, CLI миграции) работают под ролью `service_role` (`BYPASSRLS`).
 2. **Арендная изоляция сессий (Tenant Isolation)**: для запросов пула сессий устанавливается `app.current_tenant_id` (`SET LOCAL app.current_tenant_id = '...'`).
+
+> ⚠️ **Роль user-retrieval = `app_user` (БЕЗ `BYPASSRLS`), подключается по `POSTGRES_APP_DSN` (`Settings.postgres_app_dsn`).** Политики ниже объявлены `TO authenticated`, а `app_user` сделан **членом** `authenticated` (`GRANT authenticated TO app_user` в секции 0 DDL), поэтому наследует их. Без этого членства RLS вернул бы **0 строк** (default-deny) для выделенной роли. Роль `anon` в политиках оставлена для совместимости с Supabase PostgREST, но в данном продукте доступ к БД идёт только через `app_user`/`service_role`.
+>
+> ⛔ **Два DSN, не путать:** `POSTGRES_DSN` (`Settings.postgres_dsn`) — админ/миграции/воркеры (`service_role`/`postgres`, обходит RLS); `POSTGRES_APP_DSN` (`Settings.postgres_app_dsn`) — user-retrieval (`app_user`, RLS применяется). User-retrieval по `POSTGRES_DSN` запрещён: суперпользователь/`BYPASSRLS` обходит RLS, и fail-closed контракт §4.0 не сработает.
 
 ```sql
 -- Включение RLS

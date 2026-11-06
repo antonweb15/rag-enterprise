@@ -59,6 +59,40 @@ class LicenseMode(str, Enum):
     ONLINE_SUBSCRIPTION = "online_subscription"
     AIRGAP_ENTERPRISE = "airgap_enterprise"
 
+class LicenseFeature(str, Enum):
+    """ЕДИНЫЙ канонический реестр feature-флагов лицензии (entitlements).
+    Источник истины для LicensePayload/LicenseIssueRequest.features и для
+    CHECK-констрейнта licenses.features (storage_schema.md). Любое значение
+    вне этого enum в features запрещено (DDL отклонит через '<@').
+      - Каналы доставки: WEB_WIDGET/TELEGRAM/REST_SSE/CLI.
+      - Enterprise-возможности: ENTERPRISE_ACL/COLLECTIONS/SSO_OIDC.
+      - Базовые: HYBRID_SEARCH/S3_CONNECTOR/FLASHRANK_RERANK.
+      - OBSERVABILITY_FORWARD — ENTITLEMENT лицензии на форвард обезличенных
+        трейсов вендору. НЕ путать с runtime-переключателем
+        Settings/BoxDeployment.observability_forward_enabled (см. §ниже)."""
+    WEB_WIDGET = "web_widget"
+    TELEGRAM = "telegram"
+    REST_SSE = "rest_sse"
+    CLI = "cli"
+    ENTERPRISE_ACL = "enterprise_acl"
+    COLLECTIONS = "collections"
+    SSO_OIDC = "sso_oidc"
+    HYBRID_SEARCH = "hybrid_search"
+    S3_CONNECTOR = "s3_connector"
+    FLASHRANK_RERANK = "flashrank_rerank"
+    OBSERVABILITY_FORWARD = "observability_forward"
+
+# Канонический дефолтный набор фич (сведён между LicensePayload, LicenseIssueRequest
+# и DDL licenses.features DEFAULT). Standard-план получает базовый набор.
+# ⚠️ Каналы доставки (WEB_WIDGET/TELEGRAM/REST_SSE/CLI) в дефолт НЕ входят и выдаются
+#    отдельно при выпуске/апгрейде лицензии: включение канала имеет операционную стоимость
+#    (бот-токен, конфиг виджета), а право на канал — явное решение вендора (channels.md §2).
+DEFAULT_LICENSE_FEATURES: List[LicenseFeature] = [
+    LicenseFeature.HYBRID_SEARCH,
+    LicenseFeature.S3_CONNECTOR,
+    LicenseFeature.FLASHRANK_RERANK,
+]
+
 # --- Каналы доставки (см. core/channels.md) ---
 class ChannelType(str, Enum):
     WEB_WIDGET = "web"          # основной интерфейс конечного пользователя (Shadow DOM, white-label)
@@ -159,7 +193,8 @@ class LicensePayload(BaseModel):
     max_users: int = 10
     hardware_id: Optional[str] = None
     telemetry_opt_out: bool = True
-    features: List[str] = Field(default_factory=lambda: ["hybrid_search", "s3_connector", "flashrank_rerank"])
+    # Единый реестр = LicenseFeature; дефолт = DEFAULT_LICENSE_FEATURES (сведён с LicenseIssueRequest и DDL).
+    features: List[LicenseFeature] = Field(default_factory=lambda: list(DEFAULT_LICENSE_FEATURES))
 
 class TenantContext(BaseModel):
     tenant_id: UUID
@@ -453,7 +488,8 @@ class LicenseIssueRequest(BaseModel):
     max_users: int = 10
     expires_at: Optional[datetime] = None               # None => бессрочная box-лицензия
     hardware_id: Optional[str] = None                   # привязка для airgap box-лицензии
-    features: List[str] = Field(default_factory=lambda: ["hybrid_search"])
+    # Тот же канонический дефолт, что у LicensePayload и DDL licenses.features (рассинхрон устранён).
+    features: List[LicenseFeature] = Field(default_factory=lambda: list(DEFAULT_LICENSE_FEATURES))
 
 class LicenseRevokeRequest(BaseModel):
     license_id: UUID
@@ -538,7 +574,13 @@ class Settings(BaseSettings):
     # Supabase / Postgres
     supabase_url: Optional[str] = None
     supabase_service_role_key: Optional[str] = None
+    # Административное подключение (миграции Alembic, воркеры инжеста, backoffice).
+    # Роль с BYPASSRLS (service_role / postgres) — НИКОГДА не используется для user-retrieval:
+    # суперпользователь/BYPASSRLS обходит RLS (см. storage_schema.md §4).
     postgres_dsn: str = "postgresql://postgres:postgrespassword@localhost:5432/postgres"
+    # Подключение для user-retrieval: роль app_user (NOBYPASSRLS, член authenticated) —
+    # иначе политики tenant_isolation_* не применятся и вернут 0 строк (default-deny).
+    postgres_app_dsn: Optional[str] = None
 
     # S3 Object Storage (Cloudflare R2 / MinIO / Selectel / AWS)
     s3_endpoint_url: Optional[str] = None
@@ -597,6 +639,11 @@ class Settings(BaseSettings):
     trace_mask_fields: List[str] = Field(default_factory=lambda: ["password", "api_key", "token"])
     telemetry_opt_out: bool = True                       # 152-ФЗ/GDPR: по умолчанию телеметрия выключена
     observability_forward_enabled: bool = False          # КАНОНИЧЕСКОЕ имя флага: форвард обезличенных метрик/трейсов из Box вендору (opt-in). Прежнее имя telemetry_forward_enabled — устаревший alias, использовать НЕЛЬЗЯ.
+    # ⚠️ ДВА РАЗНЫХ ПОНЯТИЯ — не путать:
+    #   1) LicenseFeature.OBSERVABILITY_FORWARD ("observability_forward") — ENTITLEMENT (право по лицензии),
+    #      лежит в LicensePayload.features; определяет, РАЗРЕШЁН ли форвард вендору в принципе.
+    #   2) Settings/BoxDeployment.observability_forward_enabled — RUNTIME-переключатель клиента (opt-in).
+    #   Форвард включается ТОЛЬКО когда оба истинны: entitlement в лицензии И runtime-флаг True (И telemetry_opt_out=False).
 
     # Identity / SSO конечного пользователя (Этап C; gated фичей лицензии sso_oidc, см. core/licensing_and_distribution.md)
     oidc_enabled: bool = False                           # включение authenticated-режима виджета
