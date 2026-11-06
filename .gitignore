@@ -70,6 +70,11 @@ ENV/
 env.bak/
 venv.bak/
 
+# Node / pnpm (фронтенд-воркспейсы apps/*)
+node_modules/
+.pnpm-store/
+*.tsbuildinfo
+
 # IDE & Editors
 .idea/
 .vscode/

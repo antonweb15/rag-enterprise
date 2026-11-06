@@ -3,7 +3,9 @@ name = "rag-enterprise"
 version = "0.1.0"
 description = "Модульная корпоративная RAG-система (локальный / free-tier стек, Web-виджет / Telegram / REST-SSE, PostgreSQL + pgvector)."
 readme = "README.md"
-requires-python = ">=3.11"
+# Верхняя граница фиксирует протестированный диапазон интерпретаторов и предотвращает
+# «тихий» дрейф (CI пинится на 3.11 — см. .python-version и .github/workflows/ci.yml).
+requires-python = ">=3.11,<3.15"
 
 # Прикладные зависимости появятся в Фазе 3+ (реализация рантайма).
 # На текущей стадии (Фаза 1–2) зафиксированы только dev-инструменты качества кода.
@@ -24,11 +26,30 @@ dev = [
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
-# На Фазе 1–2 устанавливаемых пакетов ещё нет (код живёт в packages/ как исходники,
-# подключаемые через pythonpath/mypy_path). Явно отключаем авто-обнаружение пакетов
-# setuptools, чтобы `pip install -e .[dev]` не падал на «Multiple top-level packages».
+# ----------------------------------------------------------------------------
+# Backend-тулчейн (core/eval_and_ops.md §3.6). Канонический путь установки
+# dev-зависимостей — `pip install -e ".[dev]"` (источник — [project.optional-dependencies].dev,
+# он же используется в CI). `uv` поддерживается как опциональная альтернатива
+# (`uv sync --extra dev`), отдельных списков зависимостей под uv не заводится —
+# чтобы не дублировать dev-набор. `.python-version` (3.11) фиксирует целевой
+# интерпретатор; на него же пинится CI (setup-python 3.11).
+# ----------------------------------------------------------------------------
+
+# Устанавливается только ядро `rag_core` из packages/ (см. [tool.setuptools.packages.find]).
+# Транспортный слой `services/` на Этапе A не пакуется в wheel (запускается из корня репо
+# через pythonpath, ср. docker-команды `uvicorn services.api.*` в eval_and_ops.md §3.2).
 [tool.setuptools]
 py-modules = []
+
+# packages/rag_core — pip-installable ядро (`pip install -e .[dev]`): исходники лежат
+# в каталоге packages/, поэтому объявляем его как package-dir и включаем авто-обнаружение.
+[tool.setuptools.packages.find]
+where = ["packages"]
+
+# PEP 561: маркер типизации `py.typed` должен попадать в дистрибутив, иначе mypy
+# у потребителей не увидит типы `rag_core`.
+[tool.setuptools.package-data]
+rag_core = ["py.typed"]
 
 # ----------------------------------------------------------------------------
 # Ruff — линтер и форматтер
@@ -36,8 +57,7 @@ py-modules = []
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-# По мере появления прикладного кода каталог services/ добавится в src.
-src = ["tests", "packages"]
+src = ["tests", "packages", "services"]
 # Markdown-документы ядра (core/*.md, SPECIFICATION.md) содержат ИЛЛЮСТРАТИВНЫЙ
 # DDL/Pydantic/pseudo-код в fenced-блоках. Начиная с ruff 0.16 `ruff format` и
 # `ruff check` обрабатывают такие блоки, ломая CI (`ruff format --check .`).
@@ -58,8 +78,9 @@ select = [
 ignore = []
 
 [tool.ruff.lint.isort]
-# services/ пока не существует в src (убран вместе с forward-ref) — вернётся в Фазе 3+ вместе с кодом.
-known-first-party = ["rag_core", "packages"]
+# Каркас транспортного слоя services/ присутствует (services/api) — считаем его first-party
+# наравне с ядром rag_core, чтобы isort корректно группировал внутренние импорты.
+known-first-party = ["rag_core", "services", "packages"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -78,9 +99,9 @@ warn_unused_ignores = true
 disallow_untyped_defs = true
 no_implicit_optional = true
 show_error_codes = true
-# На Фазе 1–2 типизируется только tests/; в Фазе 3+ сюда добавятся services/ packages/
-# (ср. core/eval_and_ops.md §4 — целевой `mypy services/ packages/`).
-files = ["tests"]
+# Типизируются ядро, транспортный слой и тесты (ср. core/eval_and_ops.md §4 —
+# целевой `mypy services/ packages/`).
+files = ["tests", "packages", "services"]
 
 # ----------------------------------------------------------------------------
 # Pytest
@@ -88,9 +109,13 @@ files = ["tests"]
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
-pythonpath = ["packages"]
+# packages/ — для import rag_core; "." — для import services.api (каркас транспортного слоя).
+pythonpath = ["packages", "."]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --strict-markers"
 asyncio_mode = "auto"
+# Явно фиксируем scope event-loop фикстуры (убирает pytest-asyncio deprecation warning
+# и делает поведение стабильным при будущей смене дефолта / прогоне с `-W error`).
+asyncio_default_fixture_loop_scope = "function"

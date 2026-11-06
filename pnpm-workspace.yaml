@@ -1,0 +1,5 @@
+# pnpm workspaces для фронтенд-тулчейна (core/eval_and_ops.md §3.6).
+# Backend-пакеты (packages/rag_core, services/api) обслуживаются отдельным Python-тулчейном
+# (uv / pip + ruff/mypy/pytest) и здесь НЕ объявляются.
+packages:
+  - "apps/*"

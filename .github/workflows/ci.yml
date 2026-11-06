@@ -11,9 +11,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Два независимых пайплайна (back / front) с раздельным кэшем зависимостей
+# (core/eval_and_ops.md §3.6).
 jobs:
-  quality:
-    name: Lint, Format, Types, Tests
+  backend:
+    name: Backend — Lint, Format, Types, Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -24,6 +26,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install dev tooling
         run: |
@@ -42,3 +45,32 @@ jobs:
 
       - name: Pytest
         run: pytest -q
+
+  frontend:
+    name: Frontend — Type-check & Build (pnpm workspaces)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Кэш pnpm включается после фиксации pnpm-lock.yaml (`cache: pnpm` требует
+      # коммита lock-файла; до него — чистая установка, чтобы шаг не падал на cache-miss).
+      - name: Install workspace deps
+        run: pnpm install --no-frozen-lockfile
+
+      # Реальные проверки (НЕ echo-заглушки): tsc --noEmit (lint) + Vite build.
+      - name: Type-check (lint)
+        run: pnpm -r lint
+
+      - name: Build
+        run: pnpm -r build
