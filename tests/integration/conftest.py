@@ -40,7 +40,11 @@ def _pg_container() -> Iterator[object]:
     from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
 
     # Image with pgvector preinstalled (vector/sparsevec types + HNSW).
-    with PostgresContainer("pgvector/pgvector:pg16") as container:
+    # driver="psycopg" (psycopg v3) is REQUIRED: testcontainers 4.x defaults the connection
+    # URL to the psycopg2 driver and opens a readiness connection on start() via SQLAlchemy.
+    # psycopg2 is not installed (only `psycopg[binary]` v3), so the default would raise
+    # ModuleNotFoundError: psycopg2 and every integration test would error in CI.
+    with PostgresContainer("pgvector/pgvector:pg16", driver="psycopg") as container:
         yield container
 
 
