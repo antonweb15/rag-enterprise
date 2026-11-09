@@ -50,7 +50,7 @@ def _pg_container() -> Iterator[object]:
 
 @pytest.fixture(scope="session")
 def admin_engine(_pg_container: object) -> Iterator[Engine]:
-    """Admin engine (BYPASSRLS): applies migrations, sets the app_user password/grants."""
+    """Admin engine (BYPASSRLS): applies migrations and sets the app_user password."""
     from alembic import command  # noqa: PLC0415
     from alembic.config import Config  # noqa: PLC0415
 
@@ -66,15 +66,6 @@ def admin_engine(_pg_container: object) -> Iterator[Engine]:
         # app_user was created by the migration WITHOUT a password (an operational
         # secret). Set it for the test only.
         conn.execute(text(f"ALTER ROLE app_user WITH PASSWORD '{APP_USER_PASSWORD}'"))
-        # In self-hosted (outside Supabase) authenticated needs table privileges - grant them
-        # so that RLS (and not the absence of GRANT) determines row visibility.
-        conn.execute(text("GRANT USAGE ON SCHEMA public TO authenticated"))
-        conn.execute(
-            text(
-                "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES "
-                "IN SCHEMA public TO authenticated"
-            )
-        )
     yield engine
     engine.dispose()
 

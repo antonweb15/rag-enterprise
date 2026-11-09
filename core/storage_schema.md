@@ -60,10 +60,33 @@ $$;
 -- retrieval path fails with `permission denied for table ...` BEFORE RLS is reached and the
 -- fail-closed contract (§4) is never even exercisable. Role attributes are also normalized
 -- (ALTER ROLE ... (NO)BYPASSRLS) because CREATE ROLE above is IF NOT EXISTS-only. Idempotent.
-ALTER ROLE service_role BYPASSRLS;
-ALTER ROLE authenticated NOBYPASSRLS;
-ALTER ROLE anon NOBYPASSRLS;
-ALTER ROLE app_user NOBYPASSRLS;
+-- Role-attribute normalization is idempotent AND tolerant of managed/reserved roles: on
+-- Supabase `service_role`/`authenticated`/`anon` may only be ALTERed by a superuser, so an
+-- insufficient_privilege there is expected and skipped (they already carry the right attributes).
+DO $$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN
+        SELECT * FROM (VALUES
+            ('service_role', true),
+            ('authenticated', false),
+            ('anon', false),
+            ('app_user', false)
+        ) AS t(rolname, want_bypassrls)
+    LOOP
+        BEGIN
+            IF r.want_bypassrls THEN
+                EXECUTE format('ALTER ROLE %I BYPASSRLS', r.rolname);
+            ELSE
+                EXECUTE format('ALTER ROLE %I NOBYPASSRLS', r.rolname);
+            END IF;
+        EXCEPTION WHEN insufficient_privilege THEN
+            RAISE NOTICE 'skip ALTER ROLE % (reserved/managed role)', r.rolname;
+        END;
+    END LOOP;
+END
+$$;
 GRANT USAGE ON SCHEMA public TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO authenticated;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO authenticated;
