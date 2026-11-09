@@ -38,6 +38,12 @@ BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticated') THEN
         CREATE ROLE authenticated NOBYPASSRLS;
     END IF;
+    -- The anon role also pre-exists in Supabase; for self-hosted/Docker we create it (WITHOUT BYPASSRLS).
+    -- It is referenced by the §4.1 policies (FOR ... TO authenticated, anon), so it MUST exist as a role
+    -- even though DB access in this product never happens under anon (CREATE POLICY would otherwise fail).
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'anon') THEN
+        CREATE ROLE anon NOBYPASSRLS;
+    END IF;
     -- The dedicated application role for user-retrieval (WITHOUT BYPASSRLS), login via POSTGRES_APP_DSN.
     -- The password is set operationally (a secret), NOT in the migration.
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_user') THEN

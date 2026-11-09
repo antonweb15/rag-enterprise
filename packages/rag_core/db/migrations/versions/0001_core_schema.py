@@ -34,6 +34,13 @@ def upgrade() -> None:
         IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticated') THEN
             CREATE ROLE authenticated NOBYPASSRLS;
         END IF;
+        -- `anon` is a default Supabase role, but on a plain Postgres (e.g. the
+        -- pgvector container in tests / self-hosted) it does not exist. The RLS
+        -- policies in 0006 reference it (FOR ... TO authenticated, anon), so create
+        -- it here or `CREATE POLICY` fails with: role "anon" does not exist.
+        IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'anon') THEN
+            CREATE ROLE anon NOBYPASSRLS;
+        END IF;
         IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_user') THEN
             CREATE ROLE app_user LOGIN NOBYPASSRLS;
         END IF;
