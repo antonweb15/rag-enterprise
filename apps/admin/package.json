@@ -2,7 +2,7 @@
   "name": "@rag/admin",
   "version": "0.1.0",
   "private": true,
-  "description": "Admin SPA (единый билд на оба deployment_mode; режим определяет GET /api/v1/admin/config). Собирается Vite → dist/, отдаётся admin-api как StaticFiles (core/admin_panel.md, eval_and_ops.md §3.6).",
+  "description": "Admin SPA (single build for both deployment_mode values; the mode is determined by GET /api/v1/admin/config). Built with Vite -> dist/, served by admin-api as StaticFiles (core/admin_panel.md, eval_and_ops.md §3.6).",
   "type": "module",
   "scripts": {
     "dev": "vite",

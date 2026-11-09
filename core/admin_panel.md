@@ -1,48 +1,48 @@
 # Admin Panel Specification (`core/admin_panel.md`)
 
-## 1. Цель и границы подсистемы
+## 1. Subsystem purpose and boundaries
 
-Админ-панель — **приватный операторский контур** системы: через неё оператор/владелец тенанта управляет рабочим каталогом документов (загрузка, удаление, переиндексация), активирует лицензию, наблюдает за очередью инжеста, квотами и аудит-логом.
+The admin panel is the system's **private operator contour**: through it the tenant operator/owner manages the working document catalog (upload, delete, reindex), activates the license, and monitors the ingest queue, quotas and the audit log.
 
-**Явное разграничение интерфейсов:**
+**Explicit delineation of the interfaces:**
 
-| Контур | Аудитория | Доступ | Назначение |
+| Contour | Audience | Access | Purpose |
 |---|---|---|---|
-| **Admin SPA** (`/api/v1/admin/*`) | Операторы, владельцы тенанта | Приватный, только после аутентификации | Управление документами, лицензиями (self-service), мониторинг |
-| **Vendor Backoffice** (`/api/v1/backoffice/*`) | Сотрудники вендора (`superadmin`/`support`/`finance`/`sales`) | Приватный, отдельный контур вендора | Клиенты, выдача/отзыв лицензий, коды, реестр коробок, кросс-тенантная поддержка (см. [`vendor_backoffice.md`](./vendor_backoffice.md)) |
-| **Web Widget** (`/api/v1/widget/*`) | Конечные пользователи сайта клиента | Публичный, анонимная сессия | Чат-ответы по базе знаний |
-| **Telegram Bot** (`BaseChannel`) | Конечные пользователи | Публичный канал | Один из каналов доставки ответов (не основной интерфейс) |
+| **Admin SPA** (`/api/v1/admin/*`) | Operators, tenant owners | Private, only after authentication | Document management, licenses (self-service), monitoring |
+| **Vendor Backoffice** (`/api/v1/backoffice/*`) | Vendor staff (`superadmin`/`support`/`finance`/`sales`) | Private, separate vendor contour | Customers, license issuance/revocation, codes, box registry, cross-tenant support (see [`vendor_backoffice.md`](./vendor_backoffice.md)) |
+| **Web Widget** (`/api/v1/widget/*`) | End users of the client's site | Public, anonymous session | Chat answers from the knowledge base |
+| **Telegram Bot** (`BaseChannel`) | End users | Public channel | One of the answer-delivery channels (not the primary interface) |
 
-**Вне границ**: Telegram-бот **не является** административным интерфейсом. Авторизация по Telegram `user_id` / username не даёт ролевой модели, 2FA, SSO и полноценного аудита — использовать его для управления файлами и лицензиями запрещено.
-
----
-
-## 2. Принципы (зафиксированные решения)
-
-1. **Один код, два режима**: `deployment_mode: saas_cloud | on_premise_box`. Различия — только через runtime-конфиг `GET /api/v1/admin/config`, **никаких форков** фронтенда или бэкенда.
-2. **Одна БД для всего**: админка — потребитель той же PostgreSQL через `service_role`. Второй «административной» бизнес-БД не существует.
-3. **Три модульных порта**: `SQLAlchemy 2.0` (реляционка: Postgres default / SQLite dev), `BaseVectorStore` (pgvector default / Qdrant / Chroma), `BaseObjectStorage` (S3 / MinIO / R2 / local, per-tenant). **RRF — в application-layer (код), не контракт SQL.**
-4. **Аутентификация**: `fastapi-users` (SQLAlchemy) — email/password + TOTP 2FA + OAuth2/SSO. Транспорт — `CookieTransport` (HTTP-only + Secure + SameSite=Lax) + CSRF-токен.
-5. **Разделение ключевых контуров**: сессии — **HS256 с per-install секретом**; лицензии — **Ed25519 вендорским офлайн-ключом**. Ключи строго независимы.
-6. **Фронтенд**: Vite + React + TypeScript + Tailwind v4 + shadcn/ui + Lucide + `recharts` (без Tremor). Вся лицензионная и квотная логика — **только на бэкенде**.
-7. **Реалтайм**: Postgres `LISTEN/NOTIFY` (fallback — polling `documents.status`). **In-memory pub/sub запрещён.**
-8. **Box-безопасность**: админка слушает `127.0.0.1`, доступ через SSH-туннель / внутренний reverse-proxy; CLI (`typer`) дублирует активацию лицензии и ingest для air-gapped контуров.
-9. **Миграции**: `alembic upgrade head` на старте контейнера + pre-upgrade backup hook + **additive-only** (деструктивные миграции запрещены).
-10. **RLS-контракт**: `event.listens_for(Session, "after_begin")` → `SET LOCAL app.current_tenant_id`. Без него RLS при пуле соединений не работает и «протекает» между запросами.
+**Out of scope**: the Telegram bot is **not** an administrative interface. Authorization by Telegram `user_id` / username provides no role model, 2FA, SSO or a full audit — using it for managing files and licenses is forbidden.
 
 ---
 
-## 3. Архитектура подсистемы
+## 2. Principles (fixed decisions)
+
+1. **One codebase, two modes**: `deployment_mode: saas_cloud | on_premise_box`. The differences are only through the runtime config `GET /api/v1/admin/config`, **no forks** of the frontend or backend.
+2. **One DB for everything**: the admin panel is a consumer of the same PostgreSQL via `service_role`. There is no second "administrative" business DB.
+3. **Three modular ports**: `SQLAlchemy 2.0` (relational: Postgres default / SQLite dev), `BaseVectorStore` (pgvector default / Qdrant / Chroma), `BaseObjectStorage` (S3 / MinIO / R2 / local, per-tenant). **RRF — in the application layer (code), not an SQL contract.**
+4. **Authentication**: `fastapi-users` (SQLAlchemy) — email/password + TOTP 2FA + OAuth2/SSO. Transport — `CookieTransport` (HTTP-only + Secure + SameSite=Lax) + a CSRF token.
+5. **Separation of key contours**: sessions — **HS256 with a per-install secret**; licenses — **Ed25519 with the vendor's offline key**. The keys are strictly independent.
+6. **Frontend**: Vite + React + TypeScript + Tailwind v4 + shadcn/ui + Lucide + `recharts` (without Tremor). All licensing and quota logic — **only on the backend**.
+7. **Real-time**: Postgres `LISTEN/NOTIFY` (fallback — polling `documents.status`). **In-memory pub/sub is forbidden.**
+8. **Box security**: the admin panel listens on `127.0.0.1`, access via an SSH tunnel / an internal reverse proxy; the CLI (`typer`) duplicates license activation and ingest for air-gapped contours.
+9. **Migrations**: `alembic upgrade head` on container start + a pre-upgrade backup hook + **additive-only** (destructive migrations are forbidden).
+10. **RLS contract**: `event.listens_for(Session, "after_begin")` → `SET LOCAL app.current_tenant_id`. Without it RLS does not work with a connection pool and "leaks" between requests.
+
+---
+
+## 3. Subsystem architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │          Admin SPA (Vite + React + TS + Tailwind + shadcn/ui + recharts)     │
-│   - File Manager (Drag & Drop папок, клиентский sha256, дедупликация)        │
-│   - Ingestion Pipeline Tracker (Live SSE: pending → processing → indexed)    │
-│   - RAG Structure Viewer (parent/child chunks, метаданные, нормы)            │
-│   - License Screen (код / .key / PASETO, срок, лимиты, hardware_id)          │
-│   - Dashboard (recharts), Audit Log, Retrieval Playground                    │
-│   * Лицензии и квоты только отображаются: бандл читаем, проверок на нём нет  │
+│   - File Manager (Drag & Drop of folders, client-side sha256, dedup)        │
+│   - Ingestion Pipeline Tracker (Live SSE: pending → processing → indexed)   │
+│   - RAG Structure Viewer (parent/child chunks, metadata, norms)             │
+│   - License Screen (code / .key / PASETO, expiry, limits, hardware_id)      │
+│   - Dashboard (recharts), Audit Log, Retrieval Playground                   │
+│   * Licenses and quotas are only displayed: the bundle is readable, no checks on it │
 └──────────────────────────────────────┬──────────────────────────────────────┘
                                        │ HTTPS, HTTP-only Secure Cookie + CSRF
                                        ▼
@@ -50,15 +50,15 @@
 │                      FastAPI Admin Router (/api/v1/admin/*)                  │
 │   - fastapi-users: email/password, TOTP 2FA, OAuth2/SSO, CookieTransport     │
 │   - RBAC Dependency: admin | operator | viewer                              │
-│   - Rate-limit policy: private (отдельно от публичного widget)              │
-│   - Отдача SPA статикой (Box: один контейнер) / Nginx-CDN (SaaS)            │
+│   - Rate-limit policy: private (separate from the public widget)            │
+│   - Serving the SPA static files (Box: one container) / Nginx-CDN (SaaS)    │
 └───────────┬───────────────────────────┬───────────────────────┬─────────────┘
             │                           │                       │
             ▼                           ▼                       ▼
 ┌───────────────────────┐   ┌───────────────────────┐  ┌────────────────────┐
 │ PostgreSQL (service_  │   │ Taskiq + Postgres     │  │ BaseObjectStorage  │
 │ role, RLS, pgvector)  │   │ process_document_task │  │ (S3/MinIO/R2/local)│
-│ + LISTEN/NOTIFY       │   │                       │  │ per-tenant префикс │
+│ + LISTEN/NOTIFY       │   │                       │  │ per-tenant prefix  │
 └───────────────────────┘   └───────────────────────┘  └────────────────────┘
                                         │
                                         ▼
@@ -70,208 +70,208 @@
 
 ---
 
-## 4. Аутентификация и авторизация
+## 4. Authentication and authorization
 
-### 4.1. Механизм
-- **Библиотека**: `fastapi-users` поверх `SQLAlchemy 2.0` (та же БД, та же схема, тот же код-путь для SaaS и Box — без внешнего GoTrue/Supabase Auth, который невозможен в air-gapped).
-- **Методы входа**: email + password (Argon2id), **TOTP 2FA** (Google Authenticator / 1Password), OAuth2 / OIDC SSO (корпоративный провайдер) — опционально по `features`.
-- **Транспорт сессии**: `CookieTransport` — cookie с флагами `HttpOnly`, `Secure`, `SameSite=Lax`, ограниченным `Path=/api/v1` и TTL 60 минут (refresh — по sliding-обновлению).
-- **CSRF**: double-submit cookie / `X-CSRF-Token` заголовок на всех небезопасных методах (`POST`, `PUT`, `PATCH`, `DELETE`).
-- **Запрет**: ⛔ **JWT не хранить в `localStorage` / `sessionStorage`** и не передавать в `Authorization: Bearer` из SPA. Один XSS в админке = полный захват контура с правом удаления данных и подмены лицензии.
+### 4.1. Mechanism
+- **Library**: `fastapi-users` on top of `SQLAlchemy 2.0` (the same DB, the same schema, the same code path for SaaS and Box — without an external GoTrue/Supabase Auth, which is impossible in air-gapped).
+- **Login methods**: email + password (Argon2id), **TOTP 2FA** (Google Authenticator / 1Password), OAuth2 / OIDC SSO (a corporate provider) — optionally by `features`.
+- **Session transport**: `CookieTransport` — a cookie with the flags `HttpOnly`, `Secure`, `SameSite=Lax`, a restricted `Path=/api/v1` and a TTL of 60 minutes (refresh — via a sliding update).
+- **CSRF**: a double-submit cookie / an `X-CSRF-Token` header on all unsafe methods (`POST`, `PUT`, `PATCH`, `DELETE`).
+- **Forbidden**: ⛔ **do not store the JWT in `localStorage` / `sessionStorage`** and do not pass it in `Authorization: Bearer` from the SPA. A single XSS in the admin panel = a full takeover of the contour with the right to delete data and replace the license.
 
-### 4.2. Роли (RBAC)
+### 4.2. Roles (RBAC)
 
-| Роль | Документы | Лицензия | Дашборд / Аудит | Пользователи |
+| Role | Documents | License | Dashboard / Audit | Users |
 |---|---|---|---|---|
-| `admin` | CRUD + reindex | Активация / просмотр | Полный доступ | Управление |
-| `operator` | Upload / reindex (без delete) | Только просмотр статуса | Просмотр | — |
-| `viewer` | Только список и чанки | Только просмотр статуса | Просмотр | — |
+| `admin` | CRUD + reindex | Activation / view | Full access | Management |
+| `operator` | Upload / reindex (no delete) | Status view only | View | — |
+| `viewer` | Only the list and chunks | Status view only | View | — |
 
-- Доступ к БД: процесс админки ходит под `service_role` (BYPASSRLS), ключ существует **только на сервере**. Scoped-доступ по `tenant_id` обеспечивается `SET LOCAL app.current_tenant_id` в `after_begin` (см. `storage_schema.md`).
-- Роли тенантной админки (`admin`/`operator`/`viewer`) **не** включают суперадминский контур вендора. Кросс-тенантный доступ, выдача лицензий и управление клиентами вынесены в **отдельный** контур Vendor Backoffice с ролями `BackofficeRole` (`superadmin`/`support`/`finance`/`sales`); вход сотрудника вендора в чужой тенант — только через break-glass impersonation с обязательным аудитом каждого входа. См. [`vendor_backoffice.md`](./vendor_backoffice.md) и [`license_server.md`](./license_server.md).
+- DB access: the admin process operates as `service_role` (BYPASSRLS), the key exists **only on the server**. Scoped access by `tenant_id` is provided by `SET LOCAL app.current_tenant_id` in `after_begin` (see `storage_schema.md`).
+- The tenant admin-panel roles (`admin`/`operator`/`viewer`) do **not** include the vendor super-admin contour. Cross-tenant access, license issuance and customer management are moved to the **separate** Vendor Backoffice contour with the `BackofficeRole` roles (`superadmin`/`support`/`finance`/`sales`); a vendor employee's entry into a foreign tenant — only via break-glass impersonation with mandatory auditing of every entry. See [`vendor_backoffice.md`](./vendor_backoffice.md) and [`license_server.md`](./license_server.md).
 
-### 4.3. Ключи (критично)
+### 4.3. Keys (critical)
 
-| Ключ | Алгоритм | Где живёт | Назначение |
+| Key | Algorithm | Where it lives | Purpose |
 |---|---|---|---|
-| `JWT_SECRET` | **HS256**, ≥ 32 байт | Per-install: генерируется при первом старте, хранится в секрет-сторе инсталляции, ротируется при деплое | Подпись сессионных cookie-токенов |
-| `LICENSE_SIGNING_KEY` | **Ed25519** | Только у вендора, offline; приватная часть **никогда** не попадает в артефакт Box | Подпись лицензионных токенов |
+| `JWT_SECRET` | **HS256**, ≥ 32 bytes | Per-install: generated on the first start, stored in the installation's secret store, rotated on deploy | Signing the session cookie tokens |
+| `LICENSE_SIGNING_KEY` | **Ed25519** | Only at the vendor, offline; the private part **never** gets into the Box artifact | Signing license tokens |
 
-> ⚠️ **Запрещено переиспользовать `LICENSE_SIGNING_KEY` для подписи сессий.** Компрометация любого клиентского инстанса в этом случае даёт злоумышленнику возможность **выписывать лицензии от имени вендора**. Переиспользуется только *библиотека* (`pynacl` / `cryptography`) и код-паттерн, но не ключ.
+> ⚠️ **Reusing `LICENSE_SIGNING_KEY` to sign sessions is forbidden.** In that case the compromise of any client instance gives an attacker the ability to **issue licenses on the vendor's behalf**. Only the *library* (`pynacl` / `cryptography`) and the code pattern are reused, not the key.
 >
-> Асимметричная подпись сессий (EdDSA) и кастомная `JWTStrategy` **не вводятся** до появления отдельного auth-сервиса (sign/verify в разных процессах). Нативный HS256 из `fastapi-users` достаточен.
+> Asymmetric session signing (EdDSA) and a custom `JWTStrategy` are **not introduced** until a separate auth service appears (sign/verify in different processes). The native HS256 from `fastapi-users` is sufficient.
 
 ---
 
-## 5. Контракты эндпоинтов (`/api/v1/admin/*`)
+## 5. Endpoint contracts (`/api/v1/admin/*`)
 
-| Метод | Путь | Запрос | Ответ | Назначение |
+| Method | Path | Request | Response | Purpose |
 |---|---|---|---|---|
-| `GET` | `/config` | — | `AdminConfig` | Runtime-конфиг: `deployment_mode`, `features`, `branding` |
-| `GET` | `/documents` | `?status=&q=&page=&per_page=` | `Page[DocumentListItem]` | Список документов с пагинацией и фильтром по статусу |
-| `POST` | `/documents/upload` | `multipart/form-data` (файлы/папки, `access_level`, `content_hash`) | `List[DocumentListItem]` | Загрузка в `BaseObjectStorage` + постановка `process_document_task` |
-| `DELETE` | `/documents/{id}` | — | `204` | Каскадное удаление: объект в сторадже + `documents` + parent/child чанки + векторы |
-| `POST` | `/documents/{id}/reindex` | — | `DocumentListItem` | Принудительная переиндексация (сброс статуса в `pending`) |
-| `GET` | `/documents/{id}/chunks` | `?include_vectors=false&chunk_id=` | `List[ChunkView]` | Просмотр parent/child структуры; векторы — только явным флагом |
-| `PATCH` | `/documents/{id}/access-level` | `{access_level}` | `DocumentListItem` | **Ре-классификация**: смена уровня документа; каскад в parent/child транзакционно (триггер `cascade_access_level`) |
-| `GET` | `/license/status` | — | `LicenseStatus` | Срок, план, лимиты, статус онлайн/офлайн-валидации, Restricted Mode |
-| `POST` | `/license/activate` | `LicenseActivationRequest` | `LicenseStatus` | Активация по коду, `.key`-файлу или PASETO-токену |
-| `GET` | `/license/machine-fingerprint` | — | `MachineFingerprint` | `hardware_id` инсталляции для выпуска привязанной лицензии |
-| `GET` | `/stats` | `?period=` | `DashboardStats` | Документы, чанки, запросы, латентность, объём хранилища, квоты |
-| `GET` | `/ingest/queue` | `?state=` | `List[IngestQueueItem]` | Текущее состояние очереди Taskiq (pending/processing/failed, retry) |
-| `GET` | `/ingest/stream` | — (SSE) | `text/event-stream` | Live-статусы инжеста через Postgres `LISTEN/NOTIFY` |
-| `GET` | `/audit-log` | `?actor=&action=&page=` | `Page[AuditLogEntry]` | Журнал действий: кто, когда, что, IP, User-Agent |
-| `POST` | `/playground/retrieve` | `{query, access_level}` | `List[RetrievalCandidate]` | Диагностика retrieval: dense/sparse ранги, RRF, rerank |
+| `GET` | `/config` | — | `AdminConfig` | Runtime config: `deployment_mode`, `features`, `branding` |
+| `GET` | `/documents` | `?status=&q=&page=&per_page=` | `Page[DocumentListItem]` | Document list with pagination and a status filter |
+| `POST` | `/documents/upload` | `multipart/form-data` (files/folders, `access_level`, `content_hash`) | `List[DocumentListItem]` | Upload to `BaseObjectStorage` + enqueue `process_document_task` |
+| `DELETE` | `/documents/{id}` | — | `204` | Cascade delete: the storage object + `documents` + parent/child chunks + vectors |
+| `POST` | `/documents/{id}/reindex` | — | `DocumentListItem` | Force reindex (reset the status to `pending`) |
+| `GET` | `/documents/{id}/chunks` | `?include_vectors=false&chunk_id=` | `List[ChunkView]` | View the parent/child structure; vectors — only via an explicit flag |
+| `PATCH` | `/documents/{id}/access-level` | `{access_level}` | `DocumentListItem` | **Re-classification**: change the document's level; the cascade in parent/child is transactional (the `cascade_access_level` trigger) |
+| `GET` | `/license/status` | — | `LicenseStatus` | Expiry, plan, limits, the online/offline validation status, Restricted Mode |
+| `POST` | `/license/activate` | `LicenseActivationRequest` | `LicenseStatus` | Activation by code, `.key` file or PASETO token |
+| `GET` | `/license/machine-fingerprint` | — | `MachineFingerprint` | The installation's `hardware_id` for issuing a bound license |
+| `GET` | `/stats` | `?period=` | `DashboardStats` | Documents, chunks, requests, latency, storage volume, quotas |
+| `GET` | `/ingest/queue` | `?state=` | `List[IngestQueueItem]` | The current state of the Taskiq queue (pending/processing/failed, retry) |
+| `GET` | `/ingest/stream` | — (SSE) | `text/event-stream` | Live ingest statuses via Postgres `LISTEN/NOTIFY` |
+| `GET` | `/audit-log` | `?actor=&action=&page=` | `Page[AuditLogEntry]` | Action log: who, when, what, IP, User-Agent |
+| `POST` | `/playground/retrieve` | `{query, access_level}` | `List[RetrievalCandidate]` | Retrieval diagnostics: dense/sparse ranks, RRF, rerank |
 
-**Эндпоинты управления доступом** (см. §5A; часть гейтится флагом лицензии `enterprise_acl`):
+**Access-management endpoints** (see §5A; part is gated by the `enterprise_acl` license flag):
 
-| Метод | Путь | Запрос | Ответ | Назначение |
+| Method | Path | Request | Response | Purpose |
 |---|---|---|---|---|
-| `GET`/`POST`/`PATCH`/`DELETE` | `/users` | `{channel, channel_user_id, access_level, is_active}` | `Page[...]` / `User` | CRUD конечных пользователей и выдача уровня допуска |
-| `GET`/`POST`/`DELETE` | `/groups` | `{name, access_level, external_ref}` | `Page[Group]` / `Group` | CRUD групп (`enterprise_acl`) |
-| `POST`/`DELETE` | `/groups/{id}/members` | `{user_id}` | `204` | Членство пользователей в группе (`user_groups`) |
-| `GET`/`POST`/`DELETE` | `/collections` | `{name, access_level, parent_id}` | `Page[Collection]` / `Collection` | CRUD коллекций/баз знаний (`collections`) |
-| `POST`/`DELETE` | `/documents/{id}/acl` | `DocumentAclEntry` (`principal_type`, `principal_id`, `permission`) | `204` | Грант/отзыв точечного ACL (`enterprise_acl`) |
+| `GET`/`POST`/`PATCH`/`DELETE` | `/users` | `{channel, channel_user_id, access_level, is_active}` | `Page[...]` / `User` | CRUD of end users and granting the clearance level |
+| `GET`/`POST`/`DELETE` | `/groups` | `{name, access_level, external_ref}` | `Page[Group]` / `Group` | CRUD of groups (`enterprise_acl`) |
+| `POST`/`DELETE` | `/groups/{id}/members` | `{user_id}` | `204` | Users' membership in a group (`user_groups`) |
+| `GET`/`POST`/`DELETE` | `/collections` | `{name, access_level, parent_id}` | `Page[Collection]` / `Collection` | CRUD of collections/knowledge bases (`collections`) |
+| `POST`/`DELETE` | `/documents/{id}/acl` | `DocumentAclEntry` (`principal_type`, `principal_id`, `permission`) | `204` | Grant/revoke a fine-grained ACL (`enterprise_acl`) |
 
-**Общие правила:**
-- Все эндпоинты требуют валидную сессионную cookie + роль; небезопасные методы — ещё и CSRF-токен.
-- Все мутации пишут запись в `audit_log` в той же транзакции.
-- Ошибки — в едином формате `{ "detail": {...}, "code": "..." }`; внутренние трейсы наружу не отдаются.
-
----
-
-## 5A. Управление доступом (разделение прав)
-
-Раздел доступен только роли `admin` (см. §4.2). Все мутации пишутся в `audit_log` в той же транзакции.
-
-### 5A.1. Базовый уровень (всегда доступен)
-
-- **Ре-классификация документа**: UI смены `access_level` (0–3) у существующего документа (`PATCH /documents/{id}/access-level`). Смена уровня **каскадно и транзакционно** переписывает `parent_chunks.access_level`/`child_chunks.access_level` (триггер `cascade_access_level`, см. [`storage_schema.md`](./storage_schema.md) §2.3). До завершения синхронизации документ трактуется fail-closed.
-- **CRUD конечных пользователей и выдача допуска**: создание/блокировка записей `users` тенанта и установка их `access_level` (`/users`). Уровень хранится в БД и пересчитывается на бэкенде; клиент его не задаёт.
-
-### 5A.2. Enterprise-слой (за флагом лицензии `enterprise_acl`/`collections`)
-
-- **Группы**: CRUD `groups` + управление членством (`user_groups`); группа может маппиться на IdP (`external_ref`).
-- **Коллекции (базы знаний)**: CRUD `collections` + привязка документов (`document_collections`).
-- **Точечный ACL**: грант/отзыв `document_acl` для `user`/`group` (`/documents/{id}/acl`). Грант/отзыв вступает в силу **немедленно** (следующий запрос уже видит изменение, без кэш-лага).
-
-### 5A.3. Аудит
-
-Каждая мутация прав пишет `audit_log` с `action` из набора: `document.reclassify`, `user.create`/`user.update`/`user.disable`, `acl.grant`/`acl.revoke`, `group.create`/`group.delete`, `group.member.add`/`group.member.remove`, `collection.create`/`collection.delete`. Запись — в той же транзакции, что и сама мутация.
+**Common rules:**
+- All endpoints require a valid session cookie + a role; unsafe methods also require a CSRF token.
+- All mutations write a record to `audit_log` in the same transaction.
+- Errors — in a single format `{ "detail": {...}, "code": "..." }`; internal traces are not exposed outward.
 
 ---
 
-## 6. Файловый менеджер и конвейер инжеста
+## 5A. Access management (rights separation)
 
-1. Drag & Drop файлов **и папок** (`webkitdirectory`) в SPA; для каждого файла клиент считает `sha256` и предварительно спрашивает бэкенд о дубликате — повторная заливка не выполняется.
-2. Файл сохраняется через `BaseObjectStorage.put(tenant_id, ...)` с per-tenant префиксом (`{tenant_id}/...`), после чего создаётся запись в `documents` со статусом `pending`.
-3. Ставится задача `process_document_task(tenant_id, storage_ref, content_hash, access_level)`.
-4. Статусы документа: `pending → processing → indexed | failed` (на UI дополнительно детализируются подэтапы воркера: парсинг Docling → Parent/Child сплиттер → BGE-M3 эмбеддинги → запись в `BaseVectorStore`).
-5. Удаление — строго каскадное и транзакционное: объект в сторадже → `child_chunks` → `parent_chunks` → `documents` (БД-каскады `ON DELETE CASCADE` + явное удаление векторов, если vector store внешний).
-6. Квоты (`max_documents`, объём хранилища) проверяются **до** записи, на бэкенде, через `enforce_quota`.
+The section is available only to the `admin` role (see §4.2). All mutations are written to `audit_log` in the same transaction.
 
----
+### 5A.1. Base level (always available)
 
-## 7. Визуализация RAG-структуры
+- **Document re-classification**: a UI to change the `access_level` (0-3) of an existing document (`PATCH /documents/{id}/access-level`). Changing the level **cascadingly and transactionally** rewrites `parent_chunks.access_level`/`child_chunks.access_level` (the `cascade_access_level` trigger, see [`storage_schema.md`](./storage_schema.md) §2.3). Until the synchronization completes the document is treated fail-closed.
+- **CRUD of end users and granting clearance**: creating/blocking the tenant's `users` records and setting their `access_level` (`/users`). The level is stored in the DB and recomputed on the backend; the client does not set it.
 
-- `GET /documents/{id}/chunks` по умолчанию возвращает только `content`, метаданные, `token_count`, `chunk_index` и **нормы** векторов (`dense_norm`), а также признак наличия sparse-представления.
-- Эмбеддинги отдаются **только** при `?include_vectors=true` **и только для одного чанка** (`?chunk_id=...`). Причина: 1024 float × N чанков = мегабайты JSON на каждый запрос.
-- UI показывает дерево `document → parent_chunks → child_chunks` с подсветкой того, какие чанки попали в последнюю выдачу Playground.
+### 5A.2. Enterprise layer (behind the `enterprise_acl`/`collections` license flag)
 
----
+- **Groups**: CRUD of `groups` + membership management (`user_groups`); a group may be mapped to an IdP (`external_ref`).
+- **Collections (knowledge bases)**: CRUD of `collections` + binding documents (`document_collections`).
+- **Fine-grained ACL**: grant/revoke `document_acl` for a `user`/`group` (`/documents/{id}/acl`). The grant/revoke takes effect **immediately** (the next request already sees the change, without cache lag).
 
-## 8. Лицензионный экран
+### 5A.3. Audit
 
-- Поля ввода: код активации (`RAG-ENT-XXXX-YYYY-ZZZZ`), загрузка `.key` файла, вставка PASETO/JWT-токена.
-- Отображается: план, `issued_at` / `expires_at`, лимиты (`max_documents`, `max_users`), текущее потребление, `hardware_id`, режим (`airgap_enterprise` / `online_subscription`), время последнего heartbeat и остаток Grace Period.
-- Баннер **Restricted Mode** при истечении лицензии или исчерпании Grace Period — с текстом, пришедшим от бэкенда.
-- ⛔ Фронтенд **не хранит и не валидирует** лицензии: React-бандл всегда читаем, любая проверка `if (license.valid)` на клиенте декоративна. Источник истины — ответ бэкенда.
+Every rights mutation writes `audit_log` with an `action` from the set: `document.reclassify`, `user.create`/`user.update`/`user.disable`, `acl.grant`/`acl.revoke`, `group.create`/`group.delete`, `group.member.add`/`group.member.remove`, `collection.create`/`collection.delete`. The record is written in the same transaction as the mutation itself.
 
 ---
 
-## 9. Реалтайм-статусы
+## 6. File manager and ingest pipeline
 
-- **Основной механизм**: Postgres `LISTEN/NOTIFY` — воркер Taskiq при смене статуса документа шлёт `NOTIFY ingest_events, '{"document_id": ..., "status": ...}'`, SSE-эндпоинт админки слушает канал и ретранслирует события.
-- **Fallback**: polling `documents.status` (интервал 2–3 с) при старте соединения и в окружениях без доступа к `LISTEN`.
-- ⛔ **In-memory pub/sub запрещён**: при `uvicorn --workers N` события из воркера Taskiq не видны процессу, обслуживающему SSE-соединение.
-- На старте SSE-потока клиенту отдаётся снапшот текущих статусов, далее — только дельты (`event: document_status`).
+1. Drag & Drop of files **and folders** (`webkitdirectory`) in the SPA; for each file the client computes `sha256` and pre-asks the backend about a duplicate — re-upload is not performed.
+2. The file is saved via `BaseObjectStorage.put(tenant_id, ...)` with a per-tenant prefix (`{tenant_id}/...`), after which a record is created in `documents` with the `pending` status.
+3. The task `process_document_task(tenant_id, storage_ref, content_hash, access_level)` is enqueued.
+4. Document statuses: `pending → processing → indexed | failed` (in the UI the worker's sub-stages are additionally detailed: Docling parsing → Parent/Child splitter → BGE-M3 embeddings → writing to `BaseVectorStore`).
+5. Deletion — strictly cascading and transactional: the storage object → `child_chunks` → `parent_chunks` → `documents` (DB cascades `ON DELETE CASCADE` + explicit vector deletion if the vector store is external).
+6. Quotas (`max_documents`, storage volume) are checked **before** writing, on the backend, via `enforce_quota`.
 
 ---
 
-## 10. Развёртывание и изоляция
+## 7. RAG structure visualization
 
-- **Box**: сервис админки биндится на `127.0.0.1` (публикация порта наружу по умолчанию отключена). Доступ — SSH-туннель или внутренний reverse-proxy клиента с его же аутентификацией.
-- **Air-gapped CLI-дублёр** (`typer`) — чтобы в закрытом контуре вообще не требовался браузер:
+- `GET /documents/{id}/chunks` by default returns only `content`, metadata, `token_count`, `chunk_index` and the vector **norms** (`dense_norm`), as well as a flag of the sparse representation's presence.
+- Embeddings are returned **only** with `?include_vectors=true` **and only for a single chunk** (`?chunk_id=...`). Reason: 1024 float × N chunks = megabytes of JSON per request.
+- The UI shows the tree `document → parent_chunks → child_chunks` highlighting which chunks made it into the latest Playground output.
+
+---
+
+## 8. License screen
+
+- Input fields: the activation code (`RAG-ENT-XXXX-YYYY-ZZZZ`), uploading a `.key` file, pasting a PASETO/JWT token.
+- Displayed: the plan, `issued_at` / `expires_at`, limits (`max_documents`, `max_users`), current consumption, `hardware_id`, the mode (`airgap_enterprise` / `online_subscription`), the time of the last heartbeat and the remaining Grace Period.
+- A **Restricted Mode** banner on license expiry or Grace Period exhaustion — with the text coming from the backend.
+- ⛔ The frontend **does not store or validate** licenses: the React bundle is always readable, any `if (license.valid)` check on the client is decorative. The source of truth is the backend response.
+
+---
+
+## 9. Real-time statuses
+
+- **Primary mechanism**: Postgres `LISTEN/NOTIFY` — the Taskiq worker on a document-status change sends `NOTIFY ingest_events, '{"document_id": ..., "status": ...}'`, the admin SSE endpoint listens on the channel and relays the events.
+- **Fallback**: polling `documents.status` (interval 2-3 s) on connection start and in environments without `LISTEN` access.
+- ⛔ **In-memory pub/sub is forbidden**: with `uvicorn --workers N` events from the Taskiq worker are not visible to the process serving the SSE connection.
+- On the SSE stream start the client is given a snapshot of the current statuses, then — only deltas (`event: document_status`).
+
+---
+
+## 10. Deployment and isolation
+
+- **Box**: the admin service binds to `127.0.0.1` (publishing the port outward is disabled by default). Access — an SSH tunnel or the client's internal reverse proxy with their own authentication.
+- **Air-gapped CLI fallback** (`typer`) — so that in a closed contour a browser is not required at all:
   - `rag-admin license activate --file /etc/rag/license.key`
   - `rag-admin license status`
   - `rag-admin ingest --path ./data --access-level 0`
   - `rag-admin documents list|delete|reindex`
-  - **Контракт CLI-дублёра** (чтобы «недоделка» не разошлась с REST):
-    - CLI вызывает **те же** сервисные функции, что и REST-роутеры админки (общий backend-слой), — никакой параллельной бизнес-логики.
-    - Коды выхода: `0` — успех; `1` — ошибка валидации/ввода; `2` — ошибка лицензии (невалидна/истекла/`Restricted Mode`); `3` — внутренняя ошибка.
-    - Формат вывода: человекочитаемый по умолчанию; `--json` отдаёт те же Pydantic-модели, что и REST (`LicenseStatus`, `IngestQueueItem`, `DashboardStats`), сериализованные в JSON.
-    - Квоты и `access_level` проверяются на бэкенде (`enforce_quota`, PDP) идентично REST; CLI не обходит проверки.
-    - Каждая мутация пишет `audit_log` (actor = локальный CLI-оператор) так же, как из UI.
-- **Widget vs Admin**: один код, но **разные `--app` / воркер-пулы и разные rate-limit политики**. Публичный высоконагруженный виджет не должен ронять приватную админку; структура готова к `docker compose scale widget=N` без рефакторинга.
-- **SaaS**: SPA отдаётся Nginx/CDN, API — отдельным сервисом; **Box**: SPA отдаётся FastAPI как `StaticFiles` из одного контейнера.
+  - **The CLI fallback contract** (so that the "incomplete feature" does not diverge from REST):
+    - The CLI calls the **same** service functions as the admin REST routers (a shared backend layer) — no parallel business logic.
+    - Exit codes: `0` — success; `1` — a validation/input error; `2` — a license error (invalid/expired/`Restricted Mode`); `3` — an internal error.
+    - Output format: human-readable by default; `--json` returns the same Pydantic models as REST (`LicenseStatus`, `IngestQueueItem`, `DashboardStats`), serialized to JSON.
+    - Quotas and `access_level` are checked on the backend (`enforce_quota`, PDP) identically to REST; the CLI does not bypass the checks.
+    - Every mutation writes `audit_log` (actor = the local CLI operator) just as from the UI.
+- **Widget vs Admin**: one codebase, but **different `--app` / worker pools and different rate-limit policies**. The public high-load widget must not take down the private admin panel; the structure is ready for `docker compose scale widget=N` without refactoring.
+- **SaaS**: the SPA is served by Nginx/CDN, the API by a separate service; **Box**: the SPA is served by FastAPI as `StaticFiles` from a single container.
 
 ---
 
-## 11. Наблюдаемость (доступ к Langfuse)
+## 11. Observability (Langfuse access)
 
-Клиент читает трейсы **напрямую из браузера в self-hosted Langfuse** (read-only, свой проект). Дубль интерфейса чтения в админке **не строится**.
+The client reads traces **directly from the browser in the self-hosted Langfuse** (read-only, their own project). A duplicate read interface in the admin panel is **not built**.
 
-### 11.1. Cloud: read-only доступ клиента
+### 11.1. Cloud: read-only client access
 
-- Раздел админки показывает **несекретное**: `url` (deep-link `https://<langfuse-host>/project/<project_id>`) и `username` (`obs-<slug>@<домен>`).
-- **Пароль не хранится и не показывается постоянно**: выдаётся **один раз** при создании доступа; далее — кнопка «Сбросить пароль».
-- Эндпоинты:
+- The admin section shows the **non-secret**: `url` (the deep link `https://<langfuse-host>/project/<project_id>`) and `username` (`obs-<slug>@<domain>`).
+- **The password is not stored and not shown permanently**: it is issued **once** on access creation; afterwards — a "Reset password" button.
+- Endpoints:
 
-| Метод | Путь | Назначение |
+| Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/v1/admin/observability/config` | `url`, `username`, `provisioned` (без секретов) |
-| `POST` | `/api/v1/admin/observability/reset-password` | генерирует новый пароль, возвращает **один раз** |
+| `GET` | `/api/v1/admin/observability/config` | `url`, `username`, `provisioned` (no secrets) |
+| `POST` | `/api/v1/admin/observability/reset-password` | generates a new password, returns it **once** |
 
-- Роль клиента в Langfuse: `None` на организации + `Viewer` на своём проекте → видит только себя, только чтение, не видит список проектов (см. [`eval_and_ops.md`](./eval_and_ops.md) §2.2).
+- The client's role in Langfuse: `None` at the organization + `Viewer` on their project → sees only themselves, read-only, does not see the project list (see [`eval_and_ops.md`](./eval_and_ops.md) §2.2).
 
-### 11.2. Box: собственный Langfuse
+### 11.2. Box: own Langfuse
 
-- В compose коробки поднят локальный Langfuse; клиент — **владелец** (полный доступ).
-- `GET /api/v1/admin/observability/config` отдаёт локальный `url` + первичный admin-логин (одноразово при первом старте). Дальше пользователями управляет сам клиент в своём Langfuse.
+- A local Langfuse is started in the box compose; the client is the **owner** (full access).
+- `GET /api/v1/admin/observability/config` returns the local `url` + the initial admin login (one-time on the first start). After that the client manages users themselves in their Langfuse.
 
-### 11.3. Инвариант
+### 11.3. Invariant
 
-- Никакой лицензионной/квотной логики и **никакого пароля** на клиенте/в конфиге SPA.
-- Пароль в БД (`tenants.config.observability`) не хранится — только `url`/`username`/`provisioned`.
+- No licensing/quota logic and **no password** on the client / in the SPA config.
+- The password is not stored in the DB (`tenants.config.observability`) — only `url`/`username`/`provisioned`.
 
 ---
 
-## 12. Структура монорепозитория
+## 12. Monorepo structure
 
 ```
 rag-enterprise/
   apps/
     admin/      # Vite + React + TS + Tailwind v4 + shadcn/ui + Lucide + recharts
-    widget/     # встраиваемый web-виджет (Shadow DOM)
+    widget/     # the embeddable web widget (Shadow DOM)
   services/
-    api/        # FastAPI: admin / chat / widget роутеры, --app на каждый контур
+    api/        # FastAPI: admin / chat / widget routers, --app per contour
   packages/
-    rag_core/   # Pydantic-модели + интерфейсы (BaseVectorStore, BaseObjectStorage, ...)
-  core/         # Markdown-ядро спецификаций (источник истины)
+    rag_core/   # Pydantic models + interfaces (BaseVectorStore, BaseObjectStorage, ...)
+  core/         # The Markdown specification core (the source of truth)
 ```
 
-- **Тулинг**: `pnpm workspaces` (frontend) + `uv` / `poetry` workspace (backend).
-- **CI**: два независимых пайплайна (frontend: typecheck + build; backend: ruff + mypy + pytest + eval gate). Трудозатраты на настройку монорепо-тулинга закладываются отдельной задачей — в рамки «Фазы 1» они не помещаются.
+- **Tooling**: `pnpm workspaces` (frontend) + a `uv` / `poetry` workspace (backend).
+- **CI**: two independent pipelines (frontend: typecheck + build; backend: ruff + mypy + pytest + eval gate). The effort to set up the monorepo tooling is budgeted as a separate task — it does not fit within "Phase 1".
 
 ---
 
-## 13. Чек-лист безопасности админки
+## 13. Admin-panel security checklist
 
-- [x] HTTP-only + Secure + SameSite=Lax cookie, без `localStorage`.
-- [x] CSRF-токен на всех мутациях.
-- [x] TOTP 2FA обязателен для роли `admin`.
-- [x] Аудит каждой мутации с IP и User-Agent.
-- [x] Разделённые ключевые контуры (session HS256 per-install vs license Ed25519 vendor).
-- [x] Никакой лицензионной/квотной логики на клиенте.
-- [x] Box: bind `127.0.0.1` + CLI-дублёр.
-- [x] Раздельные rate-limit политики `admin` (private) и `widget` (public).
+- [x] HTTP-only + Secure + SameSite=Lax cookie, without `localStorage`.
+- [x] A CSRF token on all mutations.
+- [x] TOTP 2FA is mandatory for the `admin` role.
+- [x] An audit of every mutation with IP and User-Agent.
+- [x] Separated key contours (session HS256 per-install vs license Ed25519 vendor).
+- [x] No licensing/quota logic on the client.
+- [x] Box: bind `127.0.0.1` + the CLI fallback.
+- [x] Separate rate-limit policies `admin` (private) and `widget` (public).

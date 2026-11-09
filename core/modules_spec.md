@@ -1,6 +1,6 @@
 # Python Modules & Contract Interfaces Specification (`core/modules_spec.md`)
 
-## 1. Базовые сущности и Pydantic V2 модели
+## 1. Base entities and Pydantic V2 models
 
 ```python
 from datetime import datetime
@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# --- Перечисления ---
+# --- Enumerations ---
 class DocumentStatus(str, Enum):
     PENDING = "pending"
     PROCESSING = "processing"
@@ -29,47 +29,47 @@ class IntentType(str, Enum):
     META_COMMAND = "meta_command"
 
 class AdminRole(str, Enum):
-    ADMIN = "admin"                            # полный доступ: документы, лицензия, пользователи
-    OPERATOR = "operator"                      # загрузка и переиндексация без удаления
-    VIEWER = "viewer"                          # только чтение списков, чанков и дашборда
+    ADMIN = "admin"                            # full access: documents, license, users
+    OPERATOR = "operator"                      # upload and reindex without delete
+    VIEWER = "viewer"                          # read-only lists, chunks and the dashboard
 
 class BackofficeRole(str, Enum):
-    """Роли вендорского контура (backoffice), ОТДЕЛЬНОГО от тенантной админки.
-    Эти роли НЕ входят в AdminRole и не выдаются тенантным пользователям;
-    их носители — сотрудники вендора. См. core/vendor_backoffice.md."""
-    SUPERADMIN = "superadmin"                  # полный кросс-тенантный доступ, управление backoffice-пользователями
-    SUPPORT = "support"                        # impersonation/«войти как» тенант (break-glass) с обязательным аудитом
-    FINANCE = "finance"                        # биллинг, заказы, счета, продления (без доступа к данным тенанта)
-    SALES = "sales"                            # клиенты, заказы, активационные коды (без доступа к данным тенанта)
+    """Roles of the vendor contour (backoffice), SEPARATE from the tenant admin panel.
+    These roles are NOT part of AdminRole and are not granted to tenant users;
+    they are held by vendor staff. See core/vendor_backoffice.md."""
+    SUPERADMIN = "superadmin"                  # full cross-tenant access, management of backoffice users
+    SUPPORT = "support"                        # impersonation / "log in as" a tenant (break-glass) with mandatory auditing
+    FINANCE = "finance"                        # billing, orders, invoices, renewals (no access to tenant data)
+    SALES = "sales"                            # customers, orders, activation codes (no access to tenant data)
 
 class DeploymentMode(str, Enum):
     SAAS_CLOUD = "saas_cloud"
     ON_PREMISE_BOX = "on_premise_box"
 
 class LicensePlan(str, Enum):
-    """Канонический набор планов лицензии. Единый источник истины для DDL
-    (licenses.plan CHECK) и всех Pydantic-моделей; дефолт — STANDARD."""
+    """The canonical set of license plans. The single source of truth for the DDL
+    (licenses.plan CHECK) and all Pydantic models; the default is STANDARD."""
     STANDARD = "standard"
     PRO = "pro"
     ENTERPRISE_BOX = "enterprise_box"
 
 class LicenseMode(str, Enum):
-    """Режим лицензии: онлайн-подписка (heartbeat) vs air-gapped enterprise-box
-    (offline-валидация + grace-период). Персистится в licenses.mode."""
+    """License mode: online subscription (heartbeat) vs air-gapped enterprise-box
+    (offline validation + grace period). Persisted in licenses.mode."""
     ONLINE_SUBSCRIPTION = "online_subscription"
     AIRGAP_ENTERPRISE = "airgap_enterprise"
 
 class LicenseFeature(str, Enum):
-    """ЕДИНЫЙ канонический реестр feature-флагов лицензии (entitlements).
-    Источник истины для LicensePayload/LicenseIssueRequest.features и для
-    CHECK-констрейнта licenses.features (storage_schema.md). Любое значение
-    вне этого enum в features запрещено (DDL отклонит через '<@').
-      - Каналы доставки: WEB_WIDGET/TELEGRAM/REST_SSE/CLI.
-      - Enterprise-возможности: ENTERPRISE_ACL/COLLECTIONS/SSO_OIDC.
-      - Базовые: HYBRID_SEARCH/S3_CONNECTOR/FLASHRANK_RERANK.
-      - OBSERVABILITY_FORWARD — ENTITLEMENT лицензии на форвард обезличенных
-        трейсов вендору. НЕ путать с runtime-переключателем
-        Settings/BoxDeployment.observability_forward_enabled (см. §ниже)."""
+    """The SINGLE canonical registry of license feature flags (entitlements).
+    The source of truth for LicensePayload/LicenseIssueRequest.features and for
+    the CHECK constraint licenses.features (storage_schema.md). Any value
+    outside this enum in features is forbidden (the DDL rejects it via '<@').
+      - Delivery channels: WEB_WIDGET/TELEGRAM/REST_SSE/CLI.
+      - Enterprise capabilities: ENTERPRISE_ACL/COLLECTIONS/SSO_OIDC.
+      - Base ones: HYBRID_SEARCH/S3_CONNECTOR/FLASHRANK_RERANK.
+      - OBSERVABILITY_FORWARD — the license ENTITLEMENT for forwarding anonymized
+        traces to the vendor. Do NOT confuse with the runtime switch
+        Settings/BoxDeployment.observability_forward_enabled (see the § below)."""
     WEB_WIDGET = "web_widget"
     TELEGRAM = "telegram"
     REST_SSE = "rest_sse"
@@ -82,29 +82,29 @@ class LicenseFeature(str, Enum):
     FLASHRANK_RERANK = "flashrank_rerank"
     OBSERVABILITY_FORWARD = "observability_forward"
 
-# Канонический дефолтный набор фич (сведён между LicensePayload, LicenseIssueRequest
-# и DDL licenses.features DEFAULT). Standard-план получает базовый набор.
-# ⚠️ Каналы доставки (WEB_WIDGET/TELEGRAM/REST_SSE/CLI) в дефолт НЕ входят и выдаются
-#    отдельно при выпуске/апгрейде лицензии: включение канала имеет операционную стоимость
-#    (бот-токен, конфиг виджета), а право на канал — явное решение вендора (channels.md §2).
+# The canonical default feature set (reconciled between LicensePayload, LicenseIssueRequest
+# and the DDL licenses.features DEFAULT). The Standard plan gets the base set.
+# ⚠️ Delivery channels (WEB_WIDGET/TELEGRAM/REST_SSE/CLI) are NOT in the default and are granted
+#    separately on license issuance/upgrade: enabling a channel has an operational cost
+#    (a bot token, a widget config), and the right to a channel is an explicit vendor decision (channels.md §2).
 DEFAULT_LICENSE_FEATURES: List[LicenseFeature] = [
     LicenseFeature.HYBRID_SEARCH,
     LicenseFeature.S3_CONNECTOR,
     LicenseFeature.FLASHRANK_RERANK,
 ]
 
-# --- Каналы доставки (см. core/channels.md) ---
+# --- Delivery channels (see core/channels.md) ---
 class ChannelType(str, Enum):
-    WEB_WIDGET = "web"          # основной интерфейс конечного пользователя (Shadow DOM, white-label)
-    TELEGRAM = "telegram"       # вторичный канал доставки
-    REST_SSE = "rest_sse"       # headless REST / SSE для кастомных интеграций
-    CLI = "cli"                 # typer-консоль (air-gapped Box)
+    WEB_WIDGET = "web"          # the primary end-user interface (Shadow DOM, white-label)
+    TELEGRAM = "telegram"       # a secondary delivery channel
+    REST_SSE = "rest_sse"       # headless REST / SSE for custom integrations
+    CLI = "cli"                 # typer console (air-gapped Box)
 
 class ChannelCapabilities(BaseModel):
-    """Возможности конкретного канала. Читаются ТОЛЬКО на границе канала
-    (рендер/доставка); бизнес-логика поиска (retrieval) по ним НЕ ветвится.
-    Дефолты консервативные: отсутствие/неизвестность возможности не ломает рендер.
-    Каждый адаптер обязан иметь контракт-тест, подтверждающий заявленные флаги."""
+    """Capabilities of a specific channel. Read ONLY at the channel boundary
+    (render/delivery); the search business logic (retrieval) does NOT branch on them.
+    The defaults are conservative: an absent/unknown capability does not break the render.
+    Each adapter must have a contract test confirming the declared flags."""
     supports_streaming: bool = False
     supports_markdown: bool = False
     supports_citations: bool = False
@@ -114,27 +114,27 @@ class ChannelCapabilities(BaseModel):
     supports_commands: bool = False
     supports_callback_payloads: bool = False
     supports_cancellation: bool = False
-    max_message_length: Optional[int] = None    # None = без ограничения / задаёт адаптер (напр. Telegram = 4096)
+    max_message_length: Optional[int] = None    # None = no limit / set by the adapter (e.g. Telegram = 4096)
     max_attachments_per_message: int = 0
 
 class ChannelEventType(str, Enum):
     TEXT_MESSAGE = "text_message"
     COMMAND = "command"         # /start, /help, /activate
-    CALLBACK = "callback"       # 👍/👎 и иные callback-кнопки
+    CALLBACK = "callback"       # 👍/👎 and other callback buttons
     ATTACHMENT = "attachment"
     EDIT = "edit"
     DELETE = "delete"
 
 class AttachmentRef(BaseModel):
-    file_id: str                                 # идентификатор во внешнем канале или storage_ref
+    file_id: str                                 # identifier in the external channel or a storage_ref
     file_name: Optional[str] = None
     mime_type: Optional[str] = None
     size_bytes: Optional[int] = None
 
 class ChannelEvent(BaseModel):
-    """Канало-нейтральное входящее событие. Адаптеры каналов обязаны мапить
-    нативные события в ChannelEvent. Retrieval-ядро принимает ТОЛЬКО ChannelEvent
-    и ничего не знает о конкретном канале ('один вход, два выхода')."""
+    """A channel-neutral incoming event. Channel adapters must map
+    native events into a ChannelEvent. The retrieval core accepts ONLY a ChannelEvent
+    and knows nothing about the specific channel ('one input, two outputs')."""
     event_type: ChannelEventType = ChannelEventType.TEXT_MESSAGE
     user_id: UUID
     tenant_id: UUID
@@ -142,58 +142,58 @@ class ChannelEvent(BaseModel):
     channel_user_id: str
     session_id: Optional[str] = None
     text: Optional[str] = None
-    payload: Dict[str, Any] = Field(default_factory=dict)   # callback_data, аргументы команды
+    payload: Dict[str, Any] = Field(default_factory=dict)   # callback_data, command arguments
     attachments: List[AttachmentRef] = Field(default_factory=list)
     created_at: datetime
 
-# --- Типизированный брендинг (см. core/channels.md §7) ---
+# --- Typed branding (see core/channels.md §7) ---
 class WidgetBranding(BaseModel):
-    """White-label виджета. Управляется из админки на 100%.
-    ВНИМАНИЕ: welcome_message/disclaimer рендерятся как ТЕКСТ (не raw-HTML),
-    на виджете обязателен CSP; logo_url — только https + allowlist Content-Type."""
+    """Widget white-label. 100% controlled from the admin panel.
+    NOTE: welcome_message/disclaimer are rendered as TEXT (not raw HTML),
+    a CSP is mandatory on the widget; logo_url — only https + a Content-Type allowlist."""
     config_version: int = 1
     title: Optional[str] = Field(None, max_length=120)
     subtitle: Optional[str] = Field(None, max_length=200)
-    logo_url: Optional[str] = Field(None, pattern=r"^https://")   # допустимы только изображения (проверка Content-Type на бэкенде)
+    logo_url: Optional[str] = Field(None, pattern=r"^https://")   # images only (Content-Type checked on the backend)
     primary_color: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
     welcome_message: Optional[str] = Field(None, max_length=1000)
     disclaimer: Optional[str] = Field(None, max_length=500)
-    suggested_questions: List[Annotated[str, Field(max_length=120)]] = Field(default_factory=list, max_length=5)  # ≤5 вопросов, ≤120 символов на вопрос
+    suggested_questions: List[Annotated[str, Field(max_length=120)]] = Field(default_factory=list, max_length=5)  # <=5 questions, <=120 chars each
 
 class TelegramBranding(BaseModel):
-    """Частичный white-label Telegram. Аватар НЕ настраивается из админки
-    (только @BotFather; setMyPhoto в Bot API не существует)."""
+    """Partial Telegram white-label. The avatar is NOT configured from the admin panel
+    (only @BotFather; setMyPhoto does not exist in the Bot API)."""
     config_version: int = 1
     bot_name: Optional[str] = Field(None, max_length=64)         # setMyName
     description: Optional[str] = Field(None, max_length=512)      # setMyDescription
     short_description: Optional[str] = Field(None, max_length=120) # setMyShortDescription
-    commands: Dict[Annotated[str, Field(max_length=32)], Annotated[str, Field(max_length=256)]] = Field(default_factory=dict, max_length=100)  # setMyCommands: {command: description}; Telegram-лимиты
+    commands: Dict[Annotated[str, Field(max_length=32)], Annotated[str, Field(max_length=256)]] = Field(default_factory=dict, max_length=100)  # setMyCommands: {command: description}; Telegram limits
     welcome_message: Optional[str] = Field(None, max_length=1000)
-    # photo — НЕ настраивается из админки (BotFather only)
+    # photo — NOT configured from the admin panel (BotFather only)
 
 class BrandingConfig(BaseModel):
-    """Агрегирующая модель брендинга тенанта. Хранится в tenants.config JSONB
-    (additive-only, с config_version для миграции старых тенантов)."""
+    """The aggregating tenant branding model. Stored in tenants.config JSONB
+    (additive-only, with config_version for migrating old tenants)."""
     config_version: int = 1
     widget: WidgetBranding = Field(default_factory=WidgetBranding)
     telegram: Optional[TelegramBranding] = None
 
-# --- Модели лицензирования и тенантов ---
+# --- Licensing and tenant models ---
 class LicensePayload(BaseModel):
-    # license_id канонически — UUID; в подписанном токене (JWT/PASETO) он несётся
-    # как его строковая форма (claim), поэтому тип здесь str. В БД (licenses.id,
-    # LicenseStatus/LicenseRevokeRequest/HeartbeatPayload) — UUID. См. licensing_and_distribution.md §2.
+    # license_id is canonically a UUID; in the signed token (JWT/PASETO) it is carried
+    # as its string form (a claim), hence the type is str here. In the DB (licenses.id,
+    # LicenseStatus/LicenseRevokeRequest/HeartbeatPayload) — UUID. See licensing_and_distribution.md §2.
     license_id: str
     client_id: str
     plan: LicensePlan = LicensePlan.STANDARD
     mode: LicenseMode = LicenseMode.ONLINE_SUBSCRIPTION
     issued_at: datetime
-    expires_at: Optional[datetime] = None      # None для бессрочных On-Premise лицензий
+    expires_at: Optional[datetime] = None      # None for perpetual On-Premise licenses
     max_documents: int = 1000
     max_users: int = 10
     hardware_id: Optional[str] = None
     telemetry_opt_out: bool = True
-    # Единый реестр = LicenseFeature; дефолт = DEFAULT_LICENSE_FEATURES (сведён с LicenseIssueRequest и DDL).
+    # The single registry = LicenseFeature; the default = DEFAULT_LICENSE_FEATURES (reconciled with LicenseIssueRequest and the DDL).
     features: List[LicenseFeature] = Field(default_factory=lambda: list(DEFAULT_LICENSE_FEATURES))
 
 class TenantContext(BaseModel):
@@ -204,37 +204,37 @@ class TenantContext(BaseModel):
     storage_type: str = "s3"
     s3_bucket: Optional[str] = None
     s3_prefix: Optional[str] = None
-    allowed_origins: List[str] = Field(default_factory=list) # Строгий список доменов без wildcard
+    allowed_origins: List[str] = Field(default_factory=list) # A strict domain list without wildcard
 
 class WebWidgetSessionRequest(BaseModel):
     slug: str
-    auth_mode: Literal["anonymous", "oidc"] = "anonymous"   # Этап C: 'oidc' требует валидного id_token/assertion
-    id_token: Optional[str] = None                          # OIDC id_token / SAML assertion (проверяется на бэкенде)
+    auth_mode: Literal["anonymous", "oidc"] = "anonymous"   # Stage C: 'oidc' requires a valid id_token/assertion
+    id_token: Optional[str] = None                          # OIDC id_token / SAML assertion (verified on the backend)
 
 class WebWidgetSessionResponse(BaseModel):
     session_token: str
     tenant_id: UUID
     expires_in: int = 3600
     auth_mode: Literal["anonymous", "oidc"] = "anonymous"
-    # Для 'oidc': subject + groups кладутся в session_token (JWT) на бэкенде после верификации IdP;
-    # итоговый access_level пересчитывается из групп/пользователя, а не из claim клиента.
+    # For 'oidc': subject + groups are placed into the session_token (JWT) on the backend after IdP verification;
+    # the resulting access_level is recomputed from the groups/user, not from the client's claim.
 
-# --- Модели пользователей и контекста ---
+# --- User and context models ---
 class UserContext(BaseModel):
-    user_id: UUID                      # Обязательный ID из таблицы users (без fallback uuid4)
-    tenant_id: UUID                    # ID привязанного тенанта
+    user_id: UUID                      # Mandatory ID from the users table (no uuid4 fallback)
+    tenant_id: UUID                    # ID of the bound tenant
     channel_user_id: str
     channel: ChannelType = ChannelType.TELEGRAM
     access_level: AccessLevel = AccessLevel.PUBLIC
-    group_ids: List[UUID] = Field(default_factory=list)   # членство в группах (Этап B, enterprise_acl); пусто при выключенном флаге
-    external_subject: Optional[str] = None                # субъект из IdP (OIDC/SAML 'sub'), NULL для локальных/анонимных
-    # ВАЖНО (инвариант): access_level/group_ids ВСЕГДА пересчитываются на бэкенде из БД (users/user_groups)
-    # и/или проверенного IdP-claim; НИКОГДА не берутся из тела запроса или payload клиента.
-    # Обратная совместимость: str-enum парсит старые строковые литералы ('telegram'/'web')
-    # на переходный период. Legacy-значение 'fastapi' в БД мигрируется в 'rest_sse' (backfill),
-    # т.к. str-enum его не распарсит. Новый код обязан использовать ChannelType.
+    group_ids: List[UUID] = Field(default_factory=list)   # group membership (Stage B, enterprise_acl); empty when the flag is off
+    external_subject: Optional[str] = None                # the subject from the IdP (OIDC/SAML 'sub'), NULL for local/anonymous
+    # IMPORTANT (invariant): access_level/group_ids are ALWAYS recomputed on the backend from the DB (users/user_groups)
+    # and/or a verified IdP claim; they are NEVER taken from the request body or the client payload.
+    # Backward compatibility: the str-enum parses old string literals ('telegram'/'web')
+    # for a transition period. The legacy value 'fastapi' in the DB is migrated to 'rest_sse' (backfill),
+    # since the str-enum will not parse it. New code must use ChannelType.
 
-# --- Модели документов и чанков ---
+# --- Document and chunk models ---
 class RawDocument(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     tenant_id: UUID
@@ -253,7 +253,7 @@ class ParentChunk(BaseModel):
     content: str
     token_count: int
     chunk_index: int
-    access_level: AccessLevel = AccessLevel.PUBLIC   # денормализован из documents (каскад); defense-in-depth при прямом запросе parent-контента (гидрация)
+    access_level: AccessLevel = AccessLevel.PUBLIC   # denormalized from documents (cascade); defense-in-depth on a direct query of parent content (hydration)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 class ChildChunk(BaseModel):
@@ -269,7 +269,7 @@ class ChildChunk(BaseModel):
     embedding_model_id: str = "BAAI/bge-m3"
     embedding_version: int = 1
 
-# --- Модели поиска и генерации ---
+# --- Search and generation models ---
 class RetrievalCandidate(BaseModel):
     child_id: UUID
     parent_id: UUID
@@ -281,8 +281,8 @@ class RetrievalCandidate(BaseModel):
     rerank_score: Optional[float] = None
 
 class GenerationCitation(BaseModel):
-    citation_index: int                # Порядковый номер сноски в тексте ответа [1], [2]
-    chunk_id: UUID                     # Реальный UUID чанка в child_chunks
+    citation_index: int                # The footnote index in the answer text [1], [2]
+    chunk_id: UUID                     # The real chunk UUID in child_chunks
     document_title: str
     source_uri: str
     page: Optional[int] = None
@@ -293,10 +293,10 @@ class RAGResponse(BaseModel):
     confidence_passed: bool = True
     trace_id: Optional[str] = None
 
-# --- Модели контроля доступа: группы / коллекции / ACL (Этап B, за флагом enterprise_acl) ---
-# Соответствуют таблицам groups/collections/document_acl (см. core/storage_schema.md §2.4).
+# --- Access control models: groups / collections / ACL (Stage B, behind the enterprise_acl flag) ---
+# Correspond to the groups/collections/document_acl tables (see core/storage_schema.md §2.4).
 class AclPermission(str, Enum):
-    READ = "read"                              # enum заложен на расширение: 'write'/'manage'/...
+    READ = "read"                              # the enum is designed for extension: 'write'/'manage'/...
 
 class PrincipalType(str, Enum):
     USER = "user"
@@ -306,41 +306,41 @@ class Group(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     tenant_id: UUID
     name: str
-    access_level: AccessLevel = AccessLevel.PUBLIC         # базовый уровень допуска группы
-    external_ref: Optional[str] = None                     # id группы в IdP (OIDC/SAML/SCIM), NULL для локальных
+    access_level: AccessLevel = AccessLevel.PUBLIC         # the group's base clearance level
+    external_ref: Optional[str] = None                     # the group id in the IdP (OIDC/SAML/SCIM), NULL for local ones
 
 class Collection(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     tenant_id: UUID
     name: str
     access_level: AccessLevel = AccessLevel.PUBLIC
-    parent_id: Optional[UUID] = None                       # иерархия коллекций (базы знаний/папки)
+    parent_id: Optional[UUID] = None                       # collection hierarchy (knowledge bases/folders)
 
 class DocumentAclEntry(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     tenant_id: UUID
     document_id: UUID
     principal_type: PrincipalType
-    principal_id: UUID                                     # users.id | groups.id (по principal_type)
+    principal_id: UUID                                     # users.id | groups.id (by principal_type)
     permission: AclPermission = AclPermission.READ
-    granted_by: Optional[UUID] = None                     # users.id администратора (аудит)
+    granted_by: Optional[UUID] = None                     # users.id of the admin (audit)
 
 class AccessDecision(BaseModel):
-    """Результат вычисления эффективного доступа субъекта к ресурсам.
+    """The result of computing a subject's effective access to resources.
 
-    ВАЖНО: для RAG основной контракт — НЕ bool, а МНОЖЕСТВО/ПРЕДИКАТ разрешённых ресурсов,
-    применяемый ДО top-k/RRF (иначе пост-фильтр ломает ранжирование и RRF).
-    - effective_access_level — максимальный уровень из user.access_level и его групп (primary-фильтр).
-    - allowed_document_ids — явный allowlist из ACL (объединяется с уровневым фильтром по ИЛИ).
-    - denied_document_ids — явные запреты (имеют приоритет; fail-closed при конфликте).
+    IMPORTANT: for RAG the main contract is NOT a bool, but a SET/PREDICATE of allowed resources,
+    applied BEFORE top-k/RRF (otherwise a post-filter breaks ranking and RRF).
+    - effective_access_level — the maximum level among user.access_level and their groups (primary filter).
+    - allowed_document_ids — an explicit allowlist from the ACL (combined with the level filter by OR).
+    - denied_document_ids — explicit denials (take priority; fail-closed on conflict).
     """
     effective_access_level: AccessLevel = AccessLevel.PUBLIC
-    allowed_document_ids: Optional[List[UUID]] = None      # None => фильтр только по уровню (ACL отключён/пуст)
+    allowed_document_ids: Optional[List[UUID]] = None      # None => level-only filter (ACL disabled/empty)
     denied_document_ids: List[UUID] = Field(default_factory=list)
 
-# --- Модели админ-панели (см. core/admin_panel.md) ---
+# --- Admin-panel models (see core/admin_panel.md) ---
 class AdminConfig(BaseModel):
-    """Runtime-конфиг для единого билда SPA: различия режимов без форков."""
+    """Runtime config for the single SPA build: mode differences without forks."""
     deployment_mode: DeploymentMode
     features: List[str] = Field(default_factory=list)   # 'tenant_management', 'license_activation', 'local_file_manager', ...
     branding: Dict[str, Any] = Field(default_factory=dict)
@@ -349,10 +349,10 @@ class AdminConfig(BaseModel):
 class DocumentUploadRequest(BaseModel):
     tenant_id: UUID
     file_name: str
-    content_hash: str                                   # sha256, рассчитан на клиенте для ранней дедупликации
+    content_hash: str                                   # sha256, computed on the client for early deduplication
     size_bytes: int
     access_level: AccessLevel = AccessLevel.PUBLIC
-    relative_path: Optional[str] = None                 # путь внутри загруженной папки (webkitdirectory)
+    relative_path: Optional[str] = None                 # path inside the uploaded folder (webkitdirectory)
 
 class DocumentListItem(BaseModel):
     id: UUID
@@ -368,8 +368,8 @@ class DocumentListItem(BaseModel):
     updated_at: datetime
 
 class ChunkView(BaseModel):
-    """Эмбеддинги НЕ отдаются по умолчанию: 1024 float x N чанков = мегабайты JSON.
-    dense_embedding/sparse_embedding заполняются только при include_vectors=true и только для одного чанка."""
+    """Embeddings are NOT returned by default: 1024 float x N chunks = megabytes of JSON.
+    dense_embedding/sparse_embedding are filled only with include_vectors=true and only for a single chunk."""
     chunk_id: UUID
     parent_id: Optional[UUID] = None
     level: Literal["parent", "child"]
@@ -385,7 +385,7 @@ class ChunkView(BaseModel):
 class LicenseActivationRequest(BaseModel):
     activation_code: Optional[str] = None               # 'RAG-ENT-XXXX-YYYY-ZZZZ'
     license_token: Optional[str] = None                 # PASETO v4.public / JWT (Ed25519)
-    license_file_b64: Optional[str] = None              # содержимое загруженного .key файла
+    license_file_b64: Optional[str] = None              # the content of the uploaded .key file
 
 class MachineFingerprint(BaseModel):
     hardware_id: str                                    # sha256(cpu_id + mac_addr)
@@ -393,7 +393,7 @@ class MachineFingerprint(BaseModel):
     collected_at: datetime
 
 class LicenseStatus(BaseModel):
-    """Источник истины по лицензии — только бэкенд. Фронт отображает этот объект как есть."""
+    """The source of truth for the license is only the backend. The frontend displays this object as is."""
     is_valid: bool
     plan: LicensePlan
     mode: LicenseMode
@@ -414,7 +414,7 @@ class AuditLogEntry(BaseModel):
     tenant_id: Optional[UUID] = None
     actor_user_id: UUID
     actor_email: str
-    action: str                                         # 'document.upload', 'document.delete', 'license.activate', ...
+    action: str                                         # 'document.upload', 'document.delete', 'license.activate', ...  (action type)
     object_type: Optional[str] = None
     object_id: Optional[str] = None
     ip_address: Optional[str] = None
@@ -426,7 +426,7 @@ class IngestQueueItem(BaseModel):
     document_id: UUID
     file_name: str
     status: DocumentStatus
-    stage: Optional[str] = None                         # 'parsing' | 'splitting' | 'embedding' | 'upserting'
+    stage: Optional[str] = None                         # 'parsing' | 'splitting' | 'embedding' | 'upserting'  (worker stage)
     retry_count: int = 0
     error_message: Optional[str] = None
     updated_at: datetime
@@ -439,7 +439,7 @@ class DashboardStats(BaseModel):
     queries_last_24h: int = 0
     p95_retrieval_latency_ms: Optional[float] = None
 
-# --- Vendor Backoffice & License Server (см. core/vendor_backoffice.md, core/license_server.md) ---
+# --- Vendor Backoffice & License Server (see core/vendor_backoffice.md, core/license_server.md) ---
 class CustomerStatus(str, Enum):
     TRIAL = "trial"
     ACTIVE = "active"
@@ -447,12 +447,12 @@ class CustomerStatus(str, Enum):
     CHURNED = "churned"
 
 class Customer(BaseModel):
-    """Юридическое лицо/покупатель. ОТДЕЛЬНО от tenant (тех. инсталляция).
-    Связь 1 customer : N tenants (cloud-тенант + box-инсталляции)."""
+    """Legal entity/buyer. SEPARATE from a tenant (technical installation).
+    Relationship 1 customer : N tenants (a cloud tenant + box installations)."""
     id: UUID
     legal_name: str
     display_name: Optional[str] = None
-    inn: Optional[str] = None                            # ИНН / tax id
+    inn: Optional[str] = None                            # INN / tax id
     contact_email: str
     contact_phone: Optional[str] = None
     contract_number: Optional[str] = None
@@ -467,7 +467,7 @@ class ActivationCodeStatus(str, Enum):
     EXPIRED = "expired"
 
 class ActivationCode(BaseModel):
-    """Код вида 'RAG-ENT-XXXX-YYYY-ZZZZ', выдаётся вендором под заказ."""
+    """A code like 'RAG-ENT-XXXX-YYYY-ZZZZ', issued by the vendor per order."""
     code: str                                           # 'RAG-ENT-XXXX-YYYY-ZZZZ'
     customer_id: UUID
     order_id: Optional[UUID] = None
@@ -478,17 +478,17 @@ class ActivationCode(BaseModel):
     created_at: datetime
 
 class LicenseIssueRequest(BaseModel):
-    """Вендорская ВЫДАЧА лицензии (в отличие от self-service LicenseActivationRequest).
-    Подпись — только offline Ed25519-ключом signing-сервиса, см. core/license_server.md."""
+    """Vendor license ISSUANCE (as opposed to the self-service LicenseActivationRequest).
+    Signing — only with the signing service's offline Ed25519 key, see core/license_server.md."""
     customer_id: UUID
     tenant_id: UUID
     plan: LicensePlan = LicensePlan.STANDARD
     mode: LicenseMode = LicenseMode.ONLINE_SUBSCRIPTION
     max_documents: int = 1000
     max_users: int = 10
-    expires_at: Optional[datetime] = None               # None => бессрочная box-лицензия
-    hardware_id: Optional[str] = None                   # привязка для airgap box-лицензии
-    # Тот же канонический дефолт, что у LicensePayload и DDL licenses.features (рассинхрон устранён).
+    expires_at: Optional[datetime] = None               # None => a perpetual box license
+    hardware_id: Optional[str] = None                   # binding for an airgap box license
+    # The same canonical default as LicensePayload and the DDL licenses.features (desync removed).
     features: List[LicenseFeature] = Field(default_factory=lambda: list(DEFAULT_LICENSE_FEATURES))
 
 class LicenseRevokeRequest(BaseModel):
@@ -496,36 +496,36 @@ class LicenseRevokeRequest(BaseModel):
     reason: str
 
 class BoxDeployment(BaseModel):
-    """Реестр проданных/развёрнутых коробок (on-premise инсталляций)."""
+    """Registry of sold/deployed boxes (on-premise installations)."""
     id: UUID
     customer_id: UUID
     tenant_id: Optional[UUID] = None
-    image_version: Optional[str] = None                 # версия поставленного закрытого образа
+    image_version: Optional[str] = None                 # version of the delivered closed image
     delivered_at: Optional[datetime] = None
     hardware_id: Optional[str] = None
     last_heartbeat_at: Optional[datetime] = None
     grace_period_expires_at: Optional[datetime] = None
     restricted_mode: bool = False
-    telemetry_opt_out: bool = True                       # уважается вендором; форвард только при false
+    telemetry_opt_out: bool = True                       # respected by the vendor; forwarding only when false
     observability_forward_enabled: bool = False
 
 class ObservabilityConfig(BaseModel):
-    """Доступ облачного клиента к его проекту Langfuse (read-only Viewer).
-    Хранится в tenants.config как НЕСЕКРЕТНОЕ: пароль здесь не хранится никогда."""
+    """The cloud client's access to their Langfuse project (read-only Viewer).
+    Stored in tenants.config as NON-SECRET: the password is never stored here."""
     url: str                                             # deep-link https://<host>/project/<project_id>
-    username: str                                        # obs-<slug>@<домен>
-    provisioned: bool = False                            # проект/юзер/ключ созданы в Langfuse
+    username: str                                        # obs-<slug>@<domain>
+    provisioned: bool = False                            # project/user/key created in Langfuse
 
 class TelemetryConsent(BaseModel):
-    """Согласие на телеметрию/форвард (см. core/licensing_and_distribution.md §3.3)."""
+    """Consent to telemetry/forwarding (see core/licensing_and_distribution.md §3.3)."""
     telemetry_opt_out: bool = True
     observability_forward_enabled: bool = False
 
 class TraceContext(BaseModel):
-    """Обязательные атрибуты каждой трассы (см. core/eval_and_ops.md §2.3)."""
+    """Mandatory attributes of every trace (see core/eval_and_ops.md §2.3)."""
     tenant_id: UUID
     environment: DeploymentMode = DeploymentMode.SAAS_CLOUD
-    deployment_id: Optional[UUID] = None                 # для on_premise_box
+    deployment_id: Optional[UUID] = None                 # for on_premise_box
     channel: ChannelType = ChannelType.WEB_WIDGET
     session_id: Optional[UUID] = None
     user_id: Optional[UUID] = None
@@ -533,24 +533,24 @@ class TraceContext(BaseModel):
     license_id: Optional[UUID] = None
 
 class HeartbeatPayload(BaseModel):
-    """Периодический heartbeat инсталляции (см. core/license_server.md §4.2).
-    Только обезличенные агрегаты; тексты/документы/ПД не передаются."""
+    """Periodic installation heartbeat (see core/license_server.md §4.2).
+    Only anonymized aggregates; texts/documents/PII are not transmitted."""
     license_id: UUID
     hardware_id: str
-    version: str                                         # image_version коробки
+    version: str                                         # the box's image_version
     requests_last_period: int = 0
     uptime_seconds: int = 0
     p95_latency_ms: Optional[float] = None
     telemetry_opt_out: bool = True
 
 class ImpersonationGrant(BaseModel):
-    """Break-glass вход сотрудника вендора в чужой тенант. Каждый вход — в аудит."""
+    """Break-glass entry of a vendor employee into a foreign tenant. Every entry — to the audit."""
     backoffice_user_id: UUID
     target_tenant_id: UUID
     reason: str
-    expires_at: datetime                                # короткоживущий scope (минуты/часы)
+    expires_at: datetime                                # a short-lived scope (minutes/hours)
 
-# --- Настройки приложения (pydantic-settings) ---
+# --- Application settings (pydantic-settings) ---
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -560,26 +560,26 @@ class Settings(BaseSettings):
     license_public_key: Optional[str] = None
     license_server_url: Optional[str] = "https://license.your-rag-domain.com"
 
-    # Vendor Backoffice & License Server (ТОЛЬКО на стороне вендора; в артефакт Box НЕ попадает)
-    # См. core/vendor_backoffice.md, core/license_server.md.
-    backoffice_enabled: bool = False                       # отдельный контур/--app вендора; у клиента всегда False
-    backoffice_host: str = "127.0.0.1"                    # отдельный host/порт, не смешивать с тенантной админкой
+    # Vendor Backoffice & License Server (ONLY on the vendor side; NOT included in the Box artifact)
+    # See core/vendor_backoffice.md, core/license_server.md.
+    backoffice_enabled: bool = False                       # a separate vendor contour/--app; always False on the client
+    backoffice_host: str = "127.0.0.1"                    # a separate host/port, do not mix with the tenant admin panel
     backoffice_port: int = 8090
-    backoffice_rate_limit_per_minute: int = 60            # отдельная (private) политика для backoffice
-    backoffice_totp_required: bool = True                 # 2FA обязателен для всех backoffice-ролей
-    # Приватный Ed25519-ключ подписи лицензий НЕ хранится в вебе/БД: только в signing-сервисе / HSM / KMS.
-    license_signing_service_url: Optional[str] = None     # endpoint signing-сервиса (sign/verify в разных процессах)
-    license_crl_url: Optional[str] = None                 # revocation list для онлайн-проверки отзыва
+    backoffice_rate_limit_per_minute: int = 60            # a separate (private) policy for backoffice
+    backoffice_totp_required: bool = True                 # 2FA mandatory for all backoffice roles
+    # The private Ed25519 license-signing key is NOT stored in the web/DB: only in the signing service / HSM / KMS.
+    license_signing_service_url: Optional[str] = None     # the signing-service endpoint (sign/verify in different processes)
+    license_crl_url: Optional[str] = None                 # the revocation list for an online revocation check
 
     # Supabase / Postgres
     supabase_url: Optional[str] = None
     supabase_service_role_key: Optional[str] = None
-    # Административное подключение (миграции Alembic, воркеры инжеста, backoffice).
-    # Роль с BYPASSRLS (service_role / postgres) — НИКОГДА не используется для user-retrieval:
-    # суперпользователь/BYPASSRLS обходит RLS (см. storage_schema.md §4).
+    # The administrative connection (Alembic migrations, ingest workers, backoffice).
+    # A role with BYPASSRLS (service_role / postgres) is NEVER used for user-retrieval:
+    # a superuser/BYPASSRLS bypasses RLS (see storage_schema.md §4).
     postgres_dsn: str = "postgresql://postgres:postgrespassword@localhost:5432/postgres"
-    # Подключение для user-retrieval: роль app_user (NOBYPASSRLS, член authenticated) —
-    # иначе политики tenant_isolation_* не применятся и вернут 0 строк (default-deny).
+    # The user-retrieval connection: the app_user role (NOBYPASSRLS, a member of authenticated) —
+    # otherwise the tenant_isolation_* policies will not apply and will return 0 rows (default-deny).
     postgres_app_dsn: Optional[str] = None
 
     # S3 Object Storage (Cloudflare R2 / MinIO / Selectel / AWS)
@@ -603,60 +603,60 @@ class Settings(BaseSettings):
     rrf_beta: float = 0.4
     confidence_threshold: float = 0.35
     max_history_turns: int = 5
-    generation_temperature: float = 0.1   # детерминированность/фактологичность RAG; рекомендуемо <= 0.3
-    generation_max_tokens: int = 1024     # лимит токенов ответа LLM
+    generation_temperature: float = 0.1   # determinism/factuality of RAG; recommended <= 0.3
+    generation_max_tokens: int = 1024     # the LLM answer token limit
 
-    # Channels (см. core/channels.md)
-    telegram_bot_token: Optional[str] = None      # по умолчанию ОДИН общий бот; свой бот на тенанта — платная опция
+    # Channels (see core/channels.md)
+    telegram_bot_token: Optional[str] = None      # by default ONE shared bot; a separate bot per tenant — a paid option
 
-    # Admin Panel & Session Auth (см. core/admin_panel.md)
-    admin_host: str = "127.0.0.1"                 # в режиме Box наружу порт не публикуется
+    # Admin Panel & Session Auth (see core/admin_panel.md)
+    admin_host: str = "127.0.0.1"                 # in Box mode the port is not published outward
     admin_port: int = 8080
-    admin_static_dir: Optional[str] = "apps/admin/dist"   # отдача SPA как StaticFiles (один контейнер для Box)
-    jwt_secret: Optional[str] = None              # HS256, per-install, >= 32 байт; генерируется при первом старте
+    admin_static_dir: Optional[str] = "apps/admin/dist"   # serving the SPA as StaticFiles (a single container for Box)
+    jwt_secret: Optional[str] = None              # HS256, per-install, >= 32 bytes; generated on the first start
     session_cookie_name: str = "rag_admin_session"
     session_ttl_seconds: int = 3600
-    session_cookie_secure: bool = True            # HttpOnly + Secure + SameSite=Lax, НЕ localStorage
+    session_cookie_secure: bool = True            # HttpOnly + Secure + SameSite=Lax, NOT localStorage
     session_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
     csrf_enabled: bool = True
     totp_required_for_admin: bool = True
-    admin_rate_limit_per_minute: int = 120        # приватная политика (отдельно от публичного widget)
-    widget_rate_limit_per_minute: int = 20        # публичная политика
+    admin_rate_limit_per_minute: int = 120        # the private policy (separate from the public widget)
+    widget_rate_limit_per_minute: int = 20        # the public policy
 
     # Vector Store & Object Storage ports
     vector_store_provider: Literal["pgvector", "qdrant", "chroma"] = "pgvector"
     object_storage_provider: Literal["s3", "minio", "r2", "local"] = "s3"
     object_storage_local_root: str = "./data"
 
-    # Observability (см. core/eval_and_ops.md §2, core/admin_panel.md §11)
-    langfuse_host: str = "https://cloud.langfuse.com"    # production: self-hosted URL вендора; Cloud Free Tier — только dev
+    # Observability (see core/eval_and_ops.md §2, core/admin_panel.md §11)
+    langfuse_host: str = "https://cloud.langfuse.com"    # production: the vendor's self-hosted URL; Cloud Free Tier — dev only
     langfuse_public_key: Optional[str] = None
     langfuse_secret_key: Optional[str] = None
-    langfuse_project_id: Optional[str] = None            # один проект на тенанта (модель B)
-    langfuse_disable_signup: bool = True                 # самоРегистрация отключена — доступ выдаёт вендор
-    trace_sample_rate: float = 1.0                       # доля трасс для записи (контроль стоимости)
+    langfuse_project_id: Optional[str] = None            # one project per tenant (model B)
+    langfuse_disable_signup: bool = True                 # self-signup disabled — access is granted by the vendor
+    trace_sample_rate: float = 1.0                       # the fraction of traces to record (cost control)
     trace_retention_days: int = 30
     trace_mask_fields: List[str] = Field(default_factory=lambda: ["password", "api_key", "token"])
-    telemetry_opt_out: bool = True                       # 152-ФЗ/GDPR: по умолчанию телеметрия выключена
-    observability_forward_enabled: bool = False          # КАНОНИЧЕСКОЕ имя флага: форвард обезличенных метрик/трейсов из Box вендору (opt-in). Прежнее имя telemetry_forward_enabled — устаревший alias, использовать НЕЛЬЗЯ.
-    # ⚠️ ДВА РАЗНЫХ ПОНЯТИЯ — не путать:
-    #   1) LicenseFeature.OBSERVABILITY_FORWARD ("observability_forward") — ENTITLEMENT (право по лицензии),
-    #      лежит в LicensePayload.features; определяет, РАЗРЕШЁН ли форвард вендору в принципе.
-    #   2) Settings/BoxDeployment.observability_forward_enabled — RUNTIME-переключатель клиента (opt-in).
-    #   Форвард включается ТОЛЬКО когда оба истинны: entitlement в лицензии И runtime-флаг True (И telemetry_opt_out=False).
+    telemetry_opt_out: bool = True                       # 152-FZ/GDPR: telemetry is disabled by default
+    observability_forward_enabled: bool = False          # CANONICAL flag name: forwarding of anonymized metrics/traces from Box to the vendor (opt-in). The former name telemetry_forward_enabled is a deprecated alias and MUST NOT be used.
+    # ⚠️ TWO DIFFERENT CONCEPTS — do not confuse:
+    #   1) LicenseFeature.OBSERVABILITY_FORWARD ("observability_forward") — an ENTITLEMENT (a license right),
+    #      held in LicensePayload.features; it determines WHETHER forwarding to the vendor is allowed at all.
+    #   2) Settings/BoxDeployment.observability_forward_enabled — the client's RUNTIME switch (opt-in).
+    #   Forwarding is enabled ONLY when both are true: the entitlement in the license AND the runtime flag True (AND telemetry_opt_out=False).
 
-    # Identity / SSO конечного пользователя (Этап C; gated фичей лицензии sso_oidc, см. core/licensing_and_distribution.md)
-    oidc_enabled: bool = False                           # включение authenticated-режима виджета
-    oidc_issuer: Optional[str] = None                    # URL IdP (OIDC discovery)
+    # Identity / end-user SSO (Stage C; gated by the sso_oidc license feature, see core/licensing_and_distribution.md)
+    oidc_enabled: bool = False                           # enabling the authenticated widget mode
+    oidc_issuer: Optional[str] = None                    # the IdP URL (OIDC discovery)
     oidc_client_id: Optional[str] = None
     oidc_client_secret: Optional[str] = None
-    oidc_jwks_url: Optional[str] = None                  # для офлайн-проверки подписи id_token
-    oidc_groups_claim: str = "groups"                    # имя claim со списком групп в id_token
+    oidc_jwks_url: Optional[str] = None                  # for offline verification of the id_token signature
+    oidc_groups_claim: str = "groups"                    # the name of the claim with the group list in id_token
 ```
 
 ---
 
-## 2. Абстрактные интерфейсы ядра
+## 2. Abstract core interfaces
 
 ```python
 from abc import ABC, abstractmethod
@@ -665,93 +665,93 @@ from abc import ABC, abstractmethod
 class BaseLicenseValidator(ABC):
     @abstractmethod
     def validate_token(self, token: str) -> LicensePayload:
-        """Офлайн валидация цифровой подписи Ed25519 и срока действия токена."""
+        """Offline validation of the Ed25519 digital signature and the token's expiry."""
         pass
 
     @abstractmethod
     async def verify_heartbeat(self, license_payload: LicensePayload) -> bool:
-        """Онлайн пинг на мастер-сервер лицензий для проверки отсутствия отзыва (с grace-периодом 72ч)."""
+        """An online ping to the master license server to verify the absence of revocation (with a 72h grace period)."""
         pass
 
     @abstractmethod
     async def enforce_quota(self, tenant_id: UUID, metric: Literal["documents", "users", "requests"]) -> None:
-        """Проверка квот лицензии (max_documents, max_users) с выбросом QuotaExceededError при превышении."""
+        """Checks license quotas (max_documents, max_users), raising QuotaExceededError on exceeding."""
         pass
 
 class BaseLicenseServer(ABC):
-    """Серверная половина лицензирования (ТОЛЬКО контур вендора, см. core/license_server.md).
-    Приватный Ed25519-ключ подписи живёт в отдельном signing-сервисе / HSM / KMS,
-    а не в этом процессе и не в БД backoffice."""
+    """The server half of licensing (vendor contour ONLY, see core/license_server.md).
+    The private Ed25519 signing key lives in a separate signing service / HSM / KMS,
+    not in this process and not in the backoffice DB."""
 
     @abstractmethod
     async def issue_license(self, request: LicenseIssueRequest) -> str:
-        """Выпуск подписанного Ed25519-токена лицензии (issuance). Возвращает license_token."""
+        """Issues a signed Ed25519 license token (issuance). Returns license_token."""
         pass
 
     @abstractmethod
     async def revoke_license(self, request: LicenseRevokeRequest) -> None:
-        """Отзыв лицензии: отметка revoked_at/reason + публикация в CRL (revocation list)."""
+        """Revokes a license: marks revoked_at/reason + publishes to the CRL (revocation list)."""
         pass
 
     @abstractmethod
     async def register_heartbeat(self, hardware_id: str, license_id: UUID) -> None:
-        """Приём heartbeat от box-инсталляции: обновление last_heartbeat_at, расчёт grace/restricted."""
+        """Receives a heartbeat from a box installation: updates last_heartbeat_at, computes grace/restricted."""
         pass
 
     @abstractmethod
     async def generate_activation_code(self, customer_id: UUID, plan: LicensePlan) -> ActivationCode:
-        """Генерация кода 'RAG-ENT-XXXX-YYYY-ZZZZ' под заказ/клиента."""
+        """Generates a code 'RAG-ENT-XXXX-YYYY-ZZZZ' per order/customer."""
         pass
 
 class BaseTenantResolver(ABC):
     @abstractmethod
     async def resolve_tenant(self, identifier: str) -> TenantContext:
-        """Определение контекста тенанта по API-ключу, slug или домену виджета."""
+        """Resolves the tenant context by API key, slug or widget domain."""
         pass
 
     @abstractmethod
     async def enforce_quota(self, tenant_id: UUID, metric: Literal["documents", "users", "requests"]) -> None:
-        """Проверка текущего потребления ресурсов тенантом против установленных лимитов."""
+        """Checks the tenant's current resource consumption against the set limits."""
         pass
 
-# --- 2.0.2. Policy Decision Point (единая точка решения о доступе; Этап B/D) ---
+# --- 2.0.2. Policy Decision Point (the single access-decision point; Stage B/D) ---
 class BasePolicyEvaluator(ABC):
-    """Единый PDP (Policy Decision Point): вычисляет эффективный доступ субъекта.
-    Вызывается ДО поиска (Retriever/VectorStore), на гидрации parent-контента
-    и в citation-resolver (ре-проверка цитат). Возвращает НЕ bool, а предикат/множество
-    разрешённых ресурсов, чтобы сохранить корректность top-k/RRF (см. AccessDecision).
-    При выключенном флаге enterprise_acl учитывается только user.access_level (ACL/группы игнорируются)."""
+    """The single PDP (Policy Decision Point): computes a subject's effective access.
+    Called BEFORE the search (Retriever/VectorStore), on parent-content hydration
+    and in the citation resolver (citation re-check). Returns NOT a bool, but a predicate/set
+    of allowed resources, to preserve the correctness of top-k/RRF (see AccessDecision).
+    When the enterprise_acl flag is off, only user.access_level is considered (ACL/groups are ignored)."""
 
     @abstractmethod
     async def effective_access(self, user: UserContext) -> AccessDecision:
-        """Эффективное право = f(user.access_level, group.access_level, ACL allow/deny).
+        """Effective right = f(user.access_level, group.access_level, ACL allow/deny).
         effective_access_level = max(user.access_level, max(group.access_level))."""
         pass
 
     @abstractmethod
     async def can_access_document(self, user: UserContext, document_id: UUID) -> bool:
-        """Точечная проверка (используется для ре-проверки цитат/parent-гидрации). fail-closed."""
+        """A point-check (used for citation re-check/parent hydration). fail-closed."""
         pass
 
-# --- 2.0.1. Storage Ports (сменные реализации) ---
+# --- 2.0.1. Storage Ports (swappable implementations) ---
 class VectorStoreCapabilities(BaseModel):
     supports_sparse: bool = True
-    supports_hybrid_rrf: bool = False        # True только там, где есть нативная серверная реализация (PgVectorStore)
+    supports_hybrid_rrf: bool = False        # True only where a native server implementation exists (PgVectorStore)
     max_dimensions: int = 1024
 
 class BaseVectorStore(ABC):
-    """Порт векторного хранилища. Контракт — раздельные плечи поиска;
-    слияние RRF выполняется в application-layer (Retriever), а не внутри стора."""
+    """The vector-store port. The contract is the separate search arms;
+    RRF fusion is performed in the application layer (Retriever), not inside the store."""
 
     @property
     @abstractmethod
     def capabilities(self) -> VectorStoreCapabilities:
-        """Capability-флаги конкретной реализации (pgvector / Qdrant / Chroma)."""
+        """Capability flags of a specific implementation (pgvector / Qdrant / Chroma)."""
         pass
 
     @abstractmethod
     async def upsert_chunks(self, tenant_id: UUID, chunks: List[ChildChunk]) -> None:
-        """Идемпотентная запись/обновление child-чанков вместе с векторами."""
+        """Idempotent write/update of child chunks together with their vectors."""
         pass
 
     @abstractmethod
@@ -759,9 +759,9 @@ class BaseVectorStore(ABC):
         self, tenant_id: UUID, query_dense: List[float], k: int = 30, user_access_level: int = 0,
         allowed_document_ids: Optional[List[UUID]] = None
     ) -> List[RetrievalCandidate]:
-        """Плотное плечо: Top-k по косинусному расстоянию с фильтром tenant_id и access_level.
-        При enterprise_acl allowed_document_ids (из AccessDecision) применяется как доп. предикат
-        ДО LIMIT k — не пост-фильтром, чтобы не ломать top-k/RRF."""
+        """The dense arm: Top-k by cosine distance with a tenant_id and access_level filter.
+        With enterprise_acl, allowed_document_ids (from AccessDecision) is applied as an extra predicate
+        BEFORE LIMIT k — not as a post-filter, so as not to break top-k/RRF."""
         pass
 
     @abstractmethod
@@ -769,21 +769,21 @@ class BaseVectorStore(ABC):
         self, tenant_id: UUID, query_sparse: Dict[int, float], k: int = 30, user_access_level: int = 0,
         allowed_document_ids: Optional[List[UUID]] = None
     ) -> List[RetrievalCandidate]:
-        """Лексическое плечо (sparsevec / BM25). Если supports_sparse=False — возвращает пустой список.
-        allowed_document_ids применяется так же, как в search_dense (предикат до LIMIT)."""
+        """The lexical arm (sparsevec / BM25). If supports_sparse=False — returns an empty list.
+        allowed_document_ids is applied the same way as in search_dense (a predicate before LIMIT)."""
         pass
 
     @abstractmethod
     async def delete_by_document(self, tenant_id: UUID, document_id: UUID) -> int:
-        """Каскадное удаление векторов документа (для DELETE /admin/documents/{id})."""
+        """Cascade deletion of a document's vectors (for DELETE /admin/documents/{id})."""
         pass
 
 class BaseObjectStorage(ABC):
-    """Порт объектного хранилища (S3 / MinIO / R2 / local). Все операции строго per-tenant."""
+    """The object-storage port (S3 / MinIO / R2 / local). All operations are strictly per-tenant."""
 
     @abstractmethod
     async def put(self, tenant_id: UUID, key: str, data: bytes, content_type: Optional[str] = None) -> str:
-        """Запись объекта по префиксу {tenant_id}/{key}. Возвращает storage_ref (URI)."""
+        """Writes an object under the prefix {tenant_id}/{key}. Returns a storage_ref (URI)."""
         pass
 
     @abstractmethod
@@ -804,27 +804,27 @@ class BaseEmbedder(ABC):
     async def embed_documents(
         self, texts: List[str]
     ) -> Tuple[List[List[float]], List[Dict[int, float]]]:
-        """Единый проход BGE-M3: генерация dense (1024-dim) и sparse представлений."""
+        """A single BGE-M3 pass: generation of dense (1024-dim) and sparse representations."""
         pass
 
     @abstractmethod
     async def embed_query(
         self, text: str
     ) -> Tuple[List[float], Dict[int, float]]:
-        """Генерация dense и sparse вектора для поискового запроса."""
+        """Generation of the dense and sparse vector for a search query."""
         pass
 
 # --- 2.2. Query Rewriter & Intent Router ---
 class BaseQueryRewriter(ABC):
     @abstractmethod
     async def rewrite_query(self, query: str, history: List[Dict[str, str]]) -> str:
-        """Query Condensation: преобразование follow-up вопроса в самостоятельный запрос."""
+        """Query Condensation: transforming a follow-up question into a standalone query."""
         pass
 
 class BaseIntentRouter(ABC):
     @abstractmethod
     async def route_intent(self, query: str) -> IntentType:
-        """Маршрутизация намерения: RAG поиск, Chit-Chat или Meta команда."""
+        """Intent routing: RAG search, Chit-Chat or Meta command."""
         pass
 
 # --- 2.3. Retriever & Reranker Interface ---
@@ -834,18 +834,18 @@ class BaseRetriever(ABC):
         self, query: str, tenant_id: UUID, user_access_level: int = 0, top_k: int = 30,
         allowed_document_ids: Optional[List[UUID]] = None
     ) -> List[RetrievalCandidate]:
-        """Гибридный поиск Dense + Sparse с RRF слиянием и изоляцией по tenant_id.
-        user_access_level и allowed_document_ids берутся из AccessDecision (PolicyEvaluator),
-        рассчитанного на бэкенде; клиент их не передаёт."""
+        """Hybrid Dense + Sparse search with RRF fusion and isolation by tenant_id.
+        user_access_level and allowed_document_ids are taken from AccessDecision (PolicyEvaluator),
+        computed on the backend; the client does not pass them."""
         pass
 
 class Retriever(BaseRetriever):
-    """Эталонная реализация: вызывает BaseVectorStore.search_dense() и .search_sparse(),
-    затем выполняет RRF-слияние В КОДЕ (α=0.6, β=0.4, k=60).
+    """The reference implementation: calls BaseVectorStore.search_dense() and .search_sparse(),
+    then performs RRF fusion IN CODE (α=0.6, β=0.4, k=60).
 
-    RRF — контракт application-layer, а не SQL. SQL-функция hybrid_search_rrf остаётся
-    внутренней деталью оптимизации PgVectorStore (вызывается только при
-    capabilities.supports_hybrid_rrf = True и идентична по результату коду-фьюжену).
+    RRF is an application-layer contract, not SQL. The SQL function hybrid_search_rrf remains
+    an internal optimization detail of PgVectorStore (called only when
+    capabilities.supports_hybrid_rrf = True and identical in result to the code fusion).
     """
 
     def __init__(self, vector_store: BaseVectorStore, embedder: BaseEmbedder) -> None: ...
@@ -859,7 +859,7 @@ class Retriever(BaseRetriever):
         beta: float = 0.4,
     ) -> List[RetrievalCandidate]:
         """RRF(d) = alpha/(k + rank_dense(d)) + beta/(k + rank_sparse(d)).
-        Отсутствие документа в списке => ранг бесконечность => вклад слагаемого 0."""
+        A document absent from a list => rank infinity => the term's contribution is 0."""
         ...
 
 class BaseReranker(ABC):
@@ -867,13 +867,13 @@ class BaseReranker(ABC):
     async def rerank(
         self, query: str, candidates: List[RetrievalCandidate]
     ) -> List[RetrievalCandidate]:
-        """Переранжирование кандидатов (FlashRank) с вычислением rerank_score."""
+        """Re-ranking of candidates (FlashRank) with rerank_score computation."""
         pass
 
 class BaseConfidenceGate(ABC):
     @abstractmethod
     def evaluate(self, candidates: List[RetrievalCandidate], threshold: Optional[float] = None) -> bool:
-        """Проверка max(rerank_score) >= threshold. Если threshold=None, используется settings.confidence_threshold."""
+        """Checks max(rerank_score) >= threshold. If threshold=None, settings.confidence_threshold is used."""
         pass
 
 # --- 2.4. LLM Provider Interface ---
@@ -887,9 +887,9 @@ class BaseLLM(ABC):
         max_tokens: Optional[int] = None,
         response_format: Literal["text", "json_object"] = "text",
     ) -> str:
-        """Генерация полного текста или валидного JSON.
-        При temperature/max_tokens=None берутся settings.generation_temperature
-        и settings.generation_max_tokens (единый источник значений, без хардкода)."""
+        """Generation of full text or valid JSON.
+        When temperature/max_tokens=None, settings.generation_temperature
+        and settings.generation_max_tokens are used (a single source of values, no hardcode)."""
         pass
 
     @abstractmethod
@@ -900,142 +900,142 @@ class BaseLLM(ABC):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> AsyncGenerator[str, None]:
-        """Потоковая генерация токенов (Token Stream).
-        При temperature/max_tokens=None берутся settings.generation_temperature
-        и settings.generation_max_tokens."""
+        """Streaming token generation (Token Stream).
+        When temperature/max_tokens=None, settings.generation_temperature
+        and settings.generation_max_tokens are used."""
         pass
 
 # --- 2.5. Document Source Interface ---
 class BaseDocumentSource(ABC):
     @abstractmethod
     async def fetch_documents(self) -> List[RawDocument]:
-        """Загрузка документов из источника (локальная папка, S3, Confluence)."""
+        """Loading documents from a source (local folder, S3, Confluence)."""
         pass
 
     @abstractmethod
     async def watch_for_changes(self) -> AsyncGenerator[RawDocument, None]:
-        """Генератор событий добавления/изменения файлов с debounce."""
+        """A generator of file add/change events with debounce."""
         pass
 
-# --- 2.6. Channel Interface (см. core/channels.md) ---
+# --- 2.6. Channel Interface (see core/channels.md) ---
 class BaseChannel(ABC):
-    """Порт канала доставки. Инвариант 'один вход, два выхода':
-    receive() нормализует нативные события в ChannelEvent (вход),
-    send_response()/stream_response() — выход. Retrieval-ядро использует
-    только ChannelEvent и флаги capabilities на границе канала."""
+    """The delivery-channel port. The invariant is 'one input, two outputs':
+    receive() normalizes native events into ChannelEvent (input),
+    send_response()/stream_response() are the output. The retrieval core uses
+    only ChannelEvent and capabilities flags at the channel boundary."""
 
     @property
     @abstractmethod
     def capabilities(self) -> ChannelCapabilities:
-        """Возможности адаптера (стриминг/markdown/цитаты/кнопки/...).
-        Подтверждаются обязательным контракт-тестом адаптера."""
+        """The adapter's capabilities (streaming/markdown/citations/buttons/...).
+        Confirmed by the adapter's mandatory contract test."""
         pass
 
     @abstractmethod
     async def start(self) -> None:
-        """Запуск обработчика входящих сообщений канала."""
+        """Starts the channel's incoming-message handler."""
         pass
 
     @abstractmethod
     async def receive(self) -> AsyncGenerator[ChannelEvent, None]:
-        """Генератор нормализованных входящих событий канала (ChannelEvent)."""
+        """A generator of normalized incoming channel events (ChannelEvent)."""
         pass
 
     @abstractmethod
     async def send_response(self, user_id: str, response: RAGResponse) -> None:
-        """Отправка сформированного ответа пользователю."""
+        """Sends the composed response to the user."""
         pass
 
     @abstractmethod
     async def stream_response(
         self, user_id: str, token_stream: AsyncGenerator[str, None], initial_message_id: Optional[str] = None
     ) -> RAGResponse:
-        """Потоковая передача ответа с троттлингом обновлений и сбором итогового RAGResponse."""
+        """Streaming response delivery with update throttling and assembly of the final RAGResponse."""
         pass
 
     async def request_cancellation(self, user_id: str) -> None:
-        """Опциональный hook отмены генерации. Ядро вызывает его, но не обязано;
-        адаптеры без supports_cancellation могут не переопределять (no-op)."""
+        """An optional generation-cancellation hook. The core calls it but is not obliged to;
+        adapters without supports_cancellation may leave it unoverridden (no-op)."""
         return None
 
 # --- 2.5. Observability (Tracing Sink) ---
 class BaseTraceSink(ABC):
-    """Порт записи трейсов (реализация — Langfuse). Запись fire-and-forget:
-    отказ sink не блокирует ответ RAG (см. core/eval_and_ops.md §2.5)."""
+    """The trace-writing port (implementation — Langfuse). Fire-and-forget writes:
+    a sink failure does not block the RAG response (see core/eval_and_ops.md §2.5)."""
 
     @abstractmethod
     async def start_trace(self, ctx: TraceContext, name: str, input: Dict[str, Any]) -> str:
-        """Открывает trace; возвращает trace_id для корреляции (messages.langfuse_trace_id)."""
+        """Opens a trace; returns a trace_id for correlation (messages.langfuse_trace_id)."""
         pass
 
     @abstractmethod
     async def log_span(self, trace_id: str, name: str, *, latency_ms: float, input: Dict[str, Any], output: Dict[str, Any], metadata: Dict[str, Any]) -> None:
-        """Пишет span (intent/retrieval/rerank/llm_call) с обязательными атрибутами."""
+        """Writes a span (intent/retrieval/rerank/llm_call) with mandatory attributes."""
         pass
 
     @abstractmethod
     async def log_score(self, trace_id: str, name: str, value: float) -> None:
-        """Online-feedback 👍/👎 (+1/-1) и метрики LLM-as-a-Judge."""
+        """Online feedback 👍/👎 (+1/-1) and LLM-as-a-Judge metrics."""
         pass
 
     async def flush(self) -> None:
-        """Опциональный hook сброса буфера (best-effort, не бросает исключений)."""
+        """An optional buffer-flush hook (best-effort, raises no exceptions)."""
         return None
 ```
 
 ---
 
-## 3. Фоновые задачи (Taskiq Tasks Contract)
+## 3. Background tasks (Taskiq Tasks Contract)
 
 ```python
 # src/tasks/ingestion_tasks.py
 from taskiq import TaskiqDepends
-from taskiq_aio_pika import AioPikaBroker  # Либо PostgresBroker / InMemoryBroker
+from taskiq_aio_pika import AioPikaBroker  # Or PostgresBroker / InMemoryBroker
 
-# Инициализация брокера очереди
+# Queue broker initialization
 broker = AioPikaBroker()
 
 @broker.task
 async def process_document_task(
     tenant_id: UUID,
-    storage_ref: str,                 # ссылка на объект в BaseObjectStorage ({tenant_id}/{key})
+    storage_ref: str,                 # reference to the object in BaseObjectStorage ({tenant_id}/{key})
     content_hash: str,
     access_level: int = 0
 ) -> None:
     """
-    1. Проверка активной квоты тенанта (enforce_quota(tenant_id, 'documents')).
-    2. Проверка наличия content_hash в таблице documents для данного tenant_id (идемпотентность).
-    3. Чтение файла через BaseObjectStorage.get(tenant_id, key) и парсинг структуры (Docling / layout parser).
-    4. Token-aware нарезка на Parent и Child чанки с установкой tenant_id и access_level.
-    5. Генерация батчей BGE-M3 эмбеддингов (batch_size=32).
-    6. Транзакционная запись (BaseVectorStore.upsert_chunks) и перевод статуса в 'indexed'.
-    7. Публикация события прогресса: NOTIFY ingest_events (для SSE админки). In-memory pub/sub запрещён.
+    1. Check the tenant's active quota (enforce_quota(tenant_id, 'documents')).
+    2. Check for content_hash presence in the documents table for this tenant_id (idempotency).
+    3. Read the file via BaseObjectStorage.get(tenant_id, key) and parse the structure (Docling / layout parser).
+    4. Token-aware splitting into Parent and Child chunks with tenant_id and access_level set.
+    5. Generate batches of BGE-M3 embeddings (batch_size=32).
+    6. Transactional write (BaseVectorStore.upsert_chunks) and status transition to 'indexed'.
+    7. Publish a progress event: NOTIFY ingest_events (for the admin SSE). In-memory pub/sub is forbidden.
     """
     pass
 ```
 
 ---
 
-## 4. Контракт безопасности сессий админки (`fastapi-users`)
+## 4. Admin session security contract (`fastapi-users`)
 
 ```python
 # services/api/admin/auth.py
 from fastapi_users.authentication import AuthenticationBackend, CookieTransport, JWTStrategy
 
-# HTTP-only cookie: JWT НИКОГДА не попадает в JS-контекст (no localStorage / sessionStorage)
+# HTTP-only cookie: the JWT NEVER reaches the JS context (no localStorage / sessionStorage)
 cookie_transport = CookieTransport(
     cookie_name=settings.session_cookie_name,
     cookie_max_age=settings.session_ttl_seconds,
     cookie_path="/api/v1",
-    cookie_httponly=True,      # обязательно
-    cookie_secure=True,        # обязательно (HTTPS / SSH-туннель)
-    cookie_samesite="lax",     # обязательно
+    cookie_httponly=True,      # mandatory
+    cookie_secure=True,        # mandatory (HTTPS / SSH tunnel)
+    cookie_samesite="lax",     # mandatory
 )
 
 def get_jwt_strategy() -> JWTStrategy:
-    # HS256 + per-install секрет (>= 32 байт), генерируется при первом старте и ротируется при деплое.
-    # ЗАПРЕЩЕНО использовать здесь LICENSE_SIGNING_KEY (Ed25519, вендорский офлайн-ключ):
-    # компрометация инстанса клиента дала бы возможность выписывать лицензии от имени вендора.
+    # HS256 + a per-install secret (>= 32 bytes), generated on first start and rotated on deploy.
+    # It is FORBIDDEN to use LICENSE_SIGNING_KEY here (Ed25519, the vendor's offline key):
+    # a compromise of a client's instance would allow issuing licenses on the vendor's behalf.
     return JWTStrategy(secret=settings.jwt_secret, lifetime_seconds=settings.session_ttl_seconds)
 
 admin_auth_backend = AuthenticationBackend(
@@ -1045,9 +1045,9 @@ admin_auth_backend = AuthenticationBackend(
 )
 ```
 
-**Обязательные правила:**
-- ⛔ `localStorage` / `sessionStorage` для токенов — **запрещены**; SPA не передаёт `Authorization: Bearer`.
-- CSRF-защита (`X-CSRF-Token` / double-submit cookie) обязательна для `POST`, `PUT`, `PATCH`, `DELETE`.
-- TOTP 2FA обязателен для роли `AdminRole.ADMIN`.
-- Каждая мутация пишет `AuditLogEntry` (actor, IP, User-Agent) в той же транзакции.
-- Детали см. в [`admin_panel.md`](./admin_panel.md) §4.
+**Mandatory rules:**
+- ⛔ `localStorage` / `sessionStorage` for tokens are **forbidden**; the SPA does not send `Authorization: Bearer`.
+- CSRF protection (`X-CSRF-Token` / double-submit cookie) is mandatory for `POST`, `PUT`, `PATCH`, `DELETE`.
+- TOTP 2FA is mandatory for the `AdminRole.ADMIN` role.
+- Every mutation writes an `AuditLogEntry` (actor, IP, User-Agent) in the same transaction.
+- See details in [`admin_panel.md`](./admin_panel.md) §4.

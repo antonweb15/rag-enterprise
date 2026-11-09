@@ -1,11 +1,11 @@
-// Admin SPA — точка входа (каркас Этапа A).
+// Admin SPA - entry point (Stage A skeleton).
 //
-// Реальный UI (fastapi-users auth, RBAC, файл-менеджер, §5A управление доступом)
-// появится на Этапе I (core/admin_panel.md). Здесь — минимальный типобезопасный
-// bootstrap, достаточный для сборки Vite → dist/ и проверки `tsc --noEmit`.
+// The real UI (fastapi-users auth, RBAC, file manager, §5A access management)
+// will appear in Stage I (core/admin_panel.md). Here is a minimal type-safe
+// bootstrap, sufficient to build Vite -> dist/ and to pass `tsc --noEmit`.
 
 function mount(root: HTMLElement): void {
-  root.textContent = "Enterprise RAG Admin — каркас (Этап A). UI будет реализован на Этапе I.";
+  root.textContent = "Enterprise RAG Admin - skeleton (Stage A). The UI will be implemented in Stage I.";
 }
 
 const root = document.getElementById("app");
@@ -13,5 +13,5 @@ if (root) {
   mount(root);
 }
 
-// `isolatedModules`: файл обязан быть ES-модулем.
+// `isolatedModules`: the file must be an ES module.
 export {};

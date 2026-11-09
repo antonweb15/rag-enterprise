@@ -2,7 +2,7 @@
   "name": "@rag/widget",
   "version": "0.1.0",
   "private": true,
-  "description": "Web-виджет (Shadow DOM, white-label, Origin allowlist, короткоживущий JWT handshake). Собирается Vite → dist/ (core/channels.md, eval_and_ops.md §3.6).",
+  "description": "Web widget (Shadow DOM, white-label, Origin allowlist, short-lived JWT handshake). Built with Vite -> dist/ (core/channels.md, eval_and_ops.md §3.6).",
   "type": "module",
   "scripts": {
     "dev": "vite",

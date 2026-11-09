@@ -2,7 +2,7 @@
   "name": "rag-enterprise-frontend",
   "version": "0.1.0",
   "private": true,
-  "description": "Фронтенд-тулчейн монорепо Enterprise RAG (pnpm workspaces: apps/admin, apps/widget).",
+  "description": "Enterprise RAG monorepo frontend toolchain (pnpm workspaces: apps/admin, apps/widget).",
   "packageManager": "pnpm@9.0.0",
   "scripts": {
     "build": "pnpm -r build",

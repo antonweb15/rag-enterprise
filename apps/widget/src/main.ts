@@ -1,13 +1,13 @@
-// Web-виджет — точка входа (каркас Этапа A).
+// Web widget - entry point (Stage A skeleton).
 //
-// Реальная реализация (Shadow DOM, Origin allowlist, короткоживущий JWT handshake,
-// режимы Cloud/Box, auth_mode) появится на Этапе G (core/channels.md). Здесь —
-// минимальный типобезопасный bootstrap, достаточный для сборки Vite → dist/ и `tsc --noEmit`.
+// The real implementation (Shadow DOM, Origin allowlist, short-lived JWT handshake,
+// Cloud/Box modes, auth_mode) will appear in Stage G (core/channels.md). Here is a
+// minimal type-safe bootstrap, sufficient to build Vite -> dist/ and `tsc --noEmit`.
 
 function mount(root: HTMLElement): void {
   const shadow = root.attachShadow({ mode: "open" });
   const container = document.createElement("div");
-  container.textContent = "Enterprise RAG Widget — каркас (Этап A). UI будет реализован на Этапе G.";
+  container.textContent = "Enterprise RAG Widget - skeleton (Stage A). The UI will be implemented in Stage G.";
   shadow.appendChild(container);
 }
 
@@ -16,5 +16,5 @@ if (root) {
   mount(root);
 }
 
-// `isolatedModules`: файл обязан быть ES-модулем.
+// `isolatedModules`: the file must be an ES module.
 export {};

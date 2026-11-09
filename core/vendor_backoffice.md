@@ -1,127 +1,127 @@
 # Vendor Backoffice (Superadmin) Specification (`core/vendor_backoffice.md`)
 
-## 1. Цель и границы подсистемы
+## 1. Subsystem purpose and boundaries
 
-**Vendor Backoffice** — отдельный **суперадминский контур вендора**, через который сотрудники вендора управляют клиентами, лицензиями, активационными кодами, реестром коробок и кросс-тенантной поддержкой. Это **не** тенантная админка (`admin_panel.md`): у них разные аудитории, данные, роли и безопасность.
+The **Vendor Backoffice** is a separate **vendor super-admin contour** through which vendor staff manage customers, licenses, activation codes, the box registry and cross-tenant support. It is **not** the tenant admin panel (`admin_panel.md`): they have different audiences, data, roles and security.
 
-**Три контура системы (разграничение):**
+**The three system contours (delineation):**
 
-| Контур | Аудитория | Доступ | Назначение |
+| Contour | Audience | Access | Purpose |
 |---|---|---|---|
-| **Vendor Backoffice** (`/api/v1/backoffice/*`) | Сотрудники вендора | Приватный, только вендор | Клиенты, выдача лицензий, коды, коробки, кросс-тенантная поддержка |
-| **Tenant Admin SPA** (`/api/v1/admin/*`) | Операторы/владельцы тенанта | Приватный, после аутентификации | Документы, лицензии (self-service), мониторинг (см. `admin_panel.md`) |
-| **Web Widget / каналы** (`/api/v1/widget/*`, `BaseChannel`) | Конечные пользователи | Публичный | Чат-ответы по базе знаний (см. `channels.md`) |
+| **Vendor Backoffice** (`/api/v1/backoffice/*`) | Vendor staff | Private, vendor only | Customers, license issuance, codes, boxes, cross-tenant support |
+| **Tenant Admin SPA** (`/api/v1/admin/*`) | Tenant operators/owners | Private, after authentication | Documents, licenses (self-service), monitoring (see `admin_panel.md`) |
+| **Web Widget / channels** (`/api/v1/widget/*`, `BaseChannel`) | End users | Public | Chat answers from the knowledge base (see `channels.md`) |
 
-**Вне границ**: backoffice **не** разворачивается в артефакте `on_premise_box`; он живёт только на инфраструктуре вендора. Приватный Ed25519-ключ подписи лицензий **не** лежит в backoffice-приложении/БД (см. [`license_server.md`](./license_server.md)).
-
----
-
-## 2. Принципы (зафиксированные решения)
-
-1. **Отдельный контур**: собственный host/порт/`--app` и собственный rate-limit пул (`backoffice_*` в `Settings`). Не смешивать с тенантной админкой и публичным виджетом.
-2. **Разделение `customer` ↔ `tenant`**: `customers` (юр. лицо/покупатель) отделён от `tenants` (тех. инсталляция/подписка). Связь `1 customer : N tenants` (cloud-тенант + box-инсталляции).
-3. **Отдельная модель пользователей**: `backoffice_users` с ролями `BackofficeRole` (`superadmin`/`support`/`finance`/`sales`), **независимо** от тенантной `AdminRole`.
-4. **Обязательная 2FA**: TOTP для всех backoffice-ролей (`backoffice_totp_required = true`); SSO — опционально; принцип наименьших привилегий.
-5. **Cross-tenant только через break-glass**: любой вход сотрудника вендора в чужой тенант (impersonation/«войти как») — короткоживущий scope с **обязательным** аудитом каждого входа в `backoffice_audit_log`.
-6. **Полный аудит мутаций**: все действия вендора пишутся в `backoffice_audit_log` в той же транзакции (`actor`, IP, UA, `impersonated_tenant_id`).
-7. **Backoffice-данные вне tenant-RLS**: кросс-тенантные таблицы доступны только backoffice `service_role` (см. [`storage_schema.md`](./storage_schema.md) §2.2).
-8. **Биллинг — внешний провайдер**: собственный биллинг не пишем; `orders` — минимальный каркас со ссылкой на внешнего провайдера (Stripe/Paddle/ручной). Минимизация ПД покупателя (152-ФЗ/GDPR, data residency — ПД отдельно от RAG-данных).
-9. **Additive-only миграции**: новые таблицы/поля добавляются по регламенту `storage_schema.md` §5.
+**Out of scope**: the backoffice is **not** deployed in the `on_premise_box` artifact; it lives only on the vendor infrastructure. The private Ed25519 license-signing key is **not** located in the backoffice application/DB (see [`license_server.md`](./license_server.md)).
 
 ---
 
-## 3. Роли (RBAC) backoffice
+## 2. Principles (fixed decisions)
 
-| Роль | Клиенты/заказы | Лицензии/коды | Коробки | Impersonation | Backoffice-пользователи |
+1. **Separate contour**: its own host/port/`--app` and its own rate-limit pool (`backoffice_*` in `Settings`). Do not mix with the tenant admin panel or the public widget.
+2. **Separation of `customer` ↔ `tenant`**: `customers` (legal entity/buyer) is separated from `tenants` (technical installation/subscription). The relationship is `1 customer : N tenants` (cloud tenant + box installations).
+3. **Separate user model**: `backoffice_users` with `BackofficeRole` roles (`superadmin`/`support`/`finance`/`sales`), **independent** of the tenant `AdminRole`.
+4. **Mandatory 2FA**: TOTP for all backoffice roles (`backoffice_totp_required = true`); SSO is optional; least-privilege principle.
+5. **Cross-tenant only via break-glass**: any entry of vendor staff into a foreign tenant (impersonation / "log in as") is a short-lived scope with **mandatory** auditing of every entry in `backoffice_audit_log`.
+6. **Full audit of mutations**: all vendor actions are written to `backoffice_audit_log` in the same transaction (`actor`, IP, UA, `impersonated_tenant_id`).
+7. **Backoffice data outside tenant-RLS**: the cross-tenant tables are accessible only to the backoffice `service_role` (see [`storage_schema.md`](./storage_schema.md) §2.2).
+8. **Billing - external provider**: we do not write our own billing; `orders` is a minimal skeleton with a link to an external provider (Stripe/Paddle/manual). Minimize buyer PII (152-FZ/GDPR, data residency - PII separate from RAG data).
+9. **Additive-only migrations**: new tables/fields are added per the `storage_schema.md` §5 procedure.
+
+---
+
+## 3. Backoffice roles (RBAC)
+
+| Role | Customers/orders | Licenses/codes | Boxes | Impersonation | Backoffice users |
 |---|---|---|---|---|---|
-| `superadmin` | CRUD | Выдача/отзыв/продление | CRUD | ✅ (break-glass) | Управление |
-| `support` | Просмотр | Просмотр | Просмотр + heartbeat | ✅ (break-glass) | — |
-| `finance` | Заказы, счета, продления | Продление/апгрейд | Просмотр | — | — |
-| `sales` | Клиенты, заказы | Генерация кодов | Просмотр поставок | — | — |
+| `superadmin` | CRUD | Issue/revoke/renew | CRUD | ✅ (break-glass) | Management |
+| `support` | View | View | View + heartbeat | ✅ (break-glass) | — |
+| `finance` | Orders, invoices, renewals | Renewal/upgrade | View | — | — |
+| `sales` | Customers, orders | Code generation | View deliveries | — | — |
 
-- Доступ к данным тенантов (документы/чанки) для `finance`/`sales` **запрещён**; `support`/`superadmin` — только через break-glass impersonation с аудитом.
-
----
-
-## 4. Модель данных (сводка)
-
-Полные DDL — в [`storage_schema.md`](./storage_schema.md) §2.2; Pydantic-контракты — в [`modules_spec.md`](./modules_spec.md):
-
-- `customers` — покупатели (юр. лица), отдельно от `tenants`.
-- `backoffice_users` — сотрудники вендора (`BackofficeRole`, 2FA).
-- `orders` — заказы/биллинг (каркас + внешний провайдер).
-- `activation_codes` — коды `RAG-ENT-XXXX-YYYY-ZZZZ` под заказ.
-- `box_deployments` — реестр проданных/развёрнутых коробок (образ, поставка, `hardware_id`, heartbeat, restricted).
-- `backoffice_audit_log` — глобальный кросс-тенантный аудит + break-glass входы.
-- Расширение `licenses`: `issued_by`, `customer_id`, `revoked_at`, `revocation_reason`.
+- Access to tenant data (documents/chunks) for `finance`/`sales` is **forbidden**; `support`/`superadmin` — only via break-glass impersonation with auditing.
 
 ---
 
-## 5. Контракты эндпоинтов (`/api/v1/backoffice/*`)
+## 4. Data model (summary)
 
-| Метод | Путь | Запрос | Ответ | Назначение |
+Full DDL is in [`storage_schema.md`](./storage_schema.md) §2.2; the Pydantic contracts are in [`modules_spec.md`](./modules_spec.md):
+
+- `customers` — buyers (legal entities), separate from `tenants`.
+- `backoffice_users` — vendor staff (`BackofficeRole`, 2FA).
+- `orders` — orders/billing (skeleton + external provider).
+- `activation_codes` — `RAG-ENT-XXXX-YYYY-ZZZZ` codes per order.
+- `box_deployments` — registry of sold/deployed boxes (image, delivery, `hardware_id`, heartbeat, restricted).
+- `backoffice_audit_log` — global cross-tenant audit + break-glass entries.
+- Extension of `licenses`: `issued_by`, `customer_id`, `revoked_at`, `revocation_reason`.
+
+---
+
+## 5. Endpoint contracts (`/api/v1/backoffice/*`)
+
+| Method | Path | Request | Response | Purpose |
 |---|---|---|---|---|
-| `GET` | `/dashboard` | `?period=` | `VendorDashboard` | MRR/ARR, активные тенанты/коробки, просрочки, heartbeat-сводка |
-| `GET` | `/customers` | `?status=&q=&page=` | `Page[Customer]` | Каталог покупателей |
-| `POST` | `/customers` | `Customer` | `Customer` | Создание покупателя |
-| `GET` | `/customers/{id}/tenants` | — | `List[TenantContext]` | Тенанты/инсталляции покупателя |
-| `GET` | `/orders` | `?customer_id=&status=` | `Page[Order]` | Заказы/биллинг |
-| `POST` | `/activation-codes` | `{customer_id, plan}` | `ActivationCode` | Генерация кода `RAG-ENT-...` |
-| `GET` | `/activation-codes` | `?customer_id=&status=` | `Page[ActivationCode]` | Список/статусы кодов |
-| `POST` | `/licenses/issue` | `LicenseIssueRequest` | `LicenseStatus` | Выдача лицензии (подпись в signing-сервисе) |
-| `POST` | `/licenses/revoke` | `LicenseRevokeRequest` | `204` | Отзыв лицензии + публикация в CRL |
-| `POST` | `/licenses/{id}/extend` | `{expires_at}` | `LicenseStatus` | Продление |
-| `POST` | `/licenses/{id}/upgrade` | `{plan, limits, features}` | `LicenseStatus` | Апгрейд/даунгрейд плана |
-| `GET` | `/box-deployments` | `?stale_hours=&customer_id=` | `Page[BoxDeployment]` | Реестр коробок, фильтр по «молчащим» heartbeat |
-| `POST` | `/tenants/{id}/impersonate` | `ImpersonationGrant` | `ImpersonationGrant` | Break-glass вход (короткий scope, запись в аудит) |
-| `GET` | `/audit-log` | `?actor=&action=&tenant=&page=` | `Page[AuditLogEntry]` | Глобальный аудит, включая impersonation |
-| `GET`/`POST` | `/users` | `BackofficeUser` | — | Управление backoffice-пользователями (только `superadmin`) |
+| `GET` | `/dashboard` | `?period=` | `VendorDashboard` | MRR/ARR, active tenants/boxes, overdue items, heartbeat summary |
+| `GET` | `/customers` | `?status=&q=&page=` | `Page[Customer]` | Buyer catalog |
+| `POST` | `/customers` | `Customer` | `Customer` | Create a buyer |
+| `GET` | `/customers/{id}/tenants` | — | `List[TenantContext]` | The buyer's tenants/installations |
+| `GET` | `/orders` | `?customer_id=&status=` | `Page[Order]` | Orders/billing |
+| `POST` | `/activation-codes` | `{customer_id, plan}` | `ActivationCode` | Generate a `RAG-ENT-...` code |
+| `GET` | `/activation-codes` | `?customer_id=&status=` | `Page[ActivationCode]` | List/statuses of codes |
+| `POST` | `/licenses/issue` | `LicenseIssueRequest` | `LicenseStatus` | Issue a license (signing in the signing service) |
+| `POST` | `/licenses/revoke` | `LicenseRevokeRequest` | `204` | Revoke a license + publish to the CRL |
+| `POST` | `/licenses/{id}/extend` | `{expires_at}` | `LicenseStatus` | Renewal |
+| `POST` | `/licenses/{id}/upgrade` | `{plan, limits, features}` | `LicenseStatus` | Plan upgrade/downgrade |
+| `GET` | `/box-deployments` | `?stale_hours=&customer_id=` | `Page[BoxDeployment]` | Box registry, filtered by "silent" heartbeats |
+| `POST` | `/tenants/{id}/impersonate` | `ImpersonationGrant` | `ImpersonationGrant` | Break-glass entry (short scope, written to the audit) |
+| `GET` | `/audit-log` | `?actor=&action=&tenant=&page=` | `Page[AuditLogEntry]` | Global audit, including impersonation |
+| `GET`/`POST` | `/users` | `BackofficeUser` | — | Managing backoffice users (`superadmin` only) |
 
-**Общие правила:**
-- Все эндпоинты требуют валидную сессию backoffice + роль + 2FA; небезопасные методы — ещё и CSRF-токен.
-- Все мутации пишут запись в `backoffice_audit_log` в той же транзакции.
-- Impersonation выдаёт короткоживущий scope; факт входа и выхода логируется отдельно.
+**Common rules:**
+- All endpoints require a valid backoffice session + role + 2FA; unsafe methods also require a CSRF token.
+- All mutations write a record to `backoffice_audit_log` in the same transaction.
+- Impersonation issues a short-lived scope; entry and exit are logged separately.
 
 ---
 
-### 5.1. Кросс-тенантная наблюдаемость (Langfuse)
+### 5.1. Cross-tenant observability (Langfuse)
 
-Суперадмин видит все облачные проекты в **одном self-hosted Langfuse** (роль `Admin`/`Owner` на организации; вход — SSO, каждое действие — в `backoffice_audit_log`).
+The super-admin sees all cloud projects in **a single self-hosted Langfuse** (role `Admin`/`Owner` at the organization; login via SSO, every action in `backoffice_audit_log`).
 
-| Метод | Путь | Назначение |
+| Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/v1/backoffice/tenants/{id}/observability/provision` | Создать/перевыпустить доступ: проект `tenant-<slug>` + write-ключ `Ingestion` + user `Viewer` (org=`None`). Пароль отдаётся **один раз** |
-| `POST` | `/api/v1/backoffice/tenants/{id}/observability/reset-password` | Принудительный сброс пароля наблюдателя (одноразовый показ) |
-| `GET` | `/api/v1/backoffice/observability/tenants` | Сводка: проекты, статус `provisioned`, последний вход |
+| `POST` | `/api/v1/backoffice/tenants/{id}/observability/provision` | Create/re-issue access: project `tenant-<slug>` + an `Ingestion` write key + a `Viewer` user (org=`None`). The password is shown **once** |
+| `POST` | `/api/v1/backoffice/tenants/{id}/observability/reset-password` | Force-reset the observer's password (one-time display) |
+| `GET` | `/api/v1/backoffice/observability/tenants` | Summary: projects, `provisioned` status, last login |
 
-Провижининг идёт через Langfuse **Org API / SCIM** (self-hosted; на старте допустимо вручную в UI). В `tenants.config.observability` пишется только `{ url, username, provisioned }` — **пароль не хранится**. Реестр коробок (`box_deployments`) дополнен `telemetry_opt_out` / `observability_forward_enabled`; форвард из Box в вендорский Langfuse — строго opt-in.
-
----
-
-## 6. Приоритизация (волны поставки)
-
-- **MVP (волна 1)**: роль `superadmin`, выдача/отзыв лицензий, кросс-тенантный аудит + impersonation, реестр инсталляций (`box_deployments` + heartbeat). Серверная половина — см. [`license_server.md`](./license_server.md).
-- **Волна 2**: активационные коды, каталог клиентов, продление/апгрейд из панели, квоты/потребление per tenant.
-- **Волна 3**: биллинг (внешний провайдер), customer portal (скачивание `.key`, заявки, статусы), дистрибуция образов и переактивация железа.
+Provisioning goes through the Langfuse **Org API / SCIM** (self-hosted; initially manual in the UI is acceptable). Only `{ url, username, provisioned }` is written to `tenants.config.observability` — **the password is not stored**. The box registry (`box_deployments`) is extended with `telemetry_opt_out` / `observability_forward_enabled`; forwarding from Box to the vendor Langfuse is strictly opt-in.
 
 ---
 
-## 7. Безопасность и соответствие
+## 6. Prioritization (delivery waves)
 
-- **Изоляция контура**: отдельный host/`--app`/пул, отдельная (рекомендуется) backoffice-БД/схема вне tenant-RLS.
-- **Ключи лицензий**: подпись только offline Ed25519-ключом в signing-сервисе / HSM / KMS; ротация; revocation list (CRL). Приватный ключ не попадает в веб/БД backoffice и никогда — в артефакт Box.
-- **Break-glass**: cross-tenant доступ только через impersonation с обязательным аудитом; минимальный scope и TTL.
-- **ПД**: минимизация персональных данных покупателя, хранение отдельно от RAG-данных; учёт 152-ФЗ / GDPR / data residency; `telemetry_opt_out` уважается.
-- **Миграции**: additive-only, версионирование схемы (см. `storage_schema.md` §5).
+- **MVP (wave 1)**: the `superadmin` role, license issuance/revocation, cross-tenant audit + impersonation, the installation registry (`box_deployments` + heartbeat). The server half — see [`license_server.md`](./license_server.md).
+- **Wave 2**: activation codes, the customer catalog, renewal/upgrade from the panel, per-tenant quotas/consumption.
+- **Wave 3**: billing (external provider), a customer portal (`.key` download, requests, statuses), image distribution and hardware re-activation.
 
 ---
 
-## 8. Чек-лист безопасности backoffice
+## 7. Security and compliance
 
-- [x] Отдельный host/`--app`/rate-limit пул, не смешан с тенантной админкой.
-- [x] Обязательная TOTP 2FA для всех backoffice-ролей.
-- [x] Cross-tenant доступ только break-glass + аудит каждого входа.
-- [x] Приватный ключ подписи лицензий вне веб/БД (signing-сервис / HSM / KMS).
-- [x] Backoffice-таблицы вне tenant-RLS, доступ только backoffice `service_role`.
-- [x] Полный аудит всех мутаций вендора в той же транзакции.
-- [x] Биллинг через внешнего провайдера, минимизация ПД покупателя.
+- **Contour isolation**: a separate host/`--app`/pool, a separate (recommended) backoffice DB/schema outside tenant-RLS.
+- **License keys**: signing only with the offline Ed25519 key in the signing service / HSM / KMS; rotation; revocation list (CRL). The private key does not get into the backoffice web/DB and never into the Box artifact.
+- **Break-glass**: cross-tenant access only via impersonation with mandatory auditing; minimal scope and TTL.
+- **PII**: minimize buyer personal data, store it separately from RAG data; account for 152-FZ / GDPR / data residency; `telemetry_opt_out` is respected.
+- **Migrations**: additive-only, schema versioning (see `storage_schema.md` §5).
+
+---
+
+## 8. Backoffice security checklist
+
+- [x] Separate host/`--app`/rate-limit pool, not mixed with the tenant admin panel.
+- [x] Mandatory TOTP 2FA for all backoffice roles.
+- [x] Cross-tenant access only via break-glass + an audit of every entry.
+- [x] The private license-signing key is outside the web/DB (signing service / HSM / KMS).
+- [x] Backoffice tables outside tenant-RLS, access only for the backoffice `service_role`.
+- [x] Full audit of all vendor mutations in the same transaction.
+- [x] Billing through an external provider, minimization of buyer PII.

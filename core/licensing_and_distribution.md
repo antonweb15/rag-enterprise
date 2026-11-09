@@ -1,58 +1,58 @@
 # Licensing, Distribution & Multi-Tenancy Specification (`core/licensing_and_distribution.md`)
 
-## 1. Концепция гибридной модели: SaaS Cloud vs On-Premise Box
+## 1. The hybrid model concept: SaaS Cloud vs On-Premise Box
 
-Система поддерживает два режима развертывания с общим ядром:
+The system supports two deployment modes with a shared core:
 
 1. **SaaS Cloud (Managed Multi-Tenant)**:
-   - Хостинг на собственных серверах разработчика (VPS / Docker Compose без обязательного Kubernetes для удешевления инфраструктуры).
-   - Единая база данных PostgreSQL 15+ / pgvector (Supabase — один из вариантов хостинга, не обязательная зависимость) с жесткой изоляцией клиентов через `tenant_id` и Row-Level Security (RLS).
-   - Подключение клиентов через встраиваемый Web-виджет (`<script>`), Telegram-бота или REST/SSE API.
-   - Хранилище документов: S3 (Cloudflare R2 / MinIO / Selectel S3 / AWS) с префиксами `s3://bucket/{tenant_id}/...`.
+   - Hosting on the developer's own servers (VPS / Docker Compose without a mandatory Kubernetes to cut infrastructure cost).
+   - A single PostgreSQL 15+ / pgvector database (Supabase is one hosting option, not a mandatory dependency) with strict client isolation via `tenant_id` and Row-Level Security (RLS).
+   - Client connection via the embeddable Web widget (`<script>`), a Telegram bot or the REST/SSE API.
+   - Document storage: S3 (Cloudflare R2 / MinIO / Selectel S3 / AWS) with prefixes `s3://bucket/{tenant_id}/...`.
 
 2. **On-Premise Box (Protected Enterprise)**:
-   - Развертывание в изолированном контуре заказчика (Docker Compose / Helm / K8s).
-   - Клиент сам предоставляет вычислительные ресурсы, локальную СУБД, S3-хранилище (MinIO/Ceph) и LLM-провайдеров (локальная Ollama или корпоративные API-ключи).
-   - Защита интеллектуальной собственности: ядро поставляется в виде скомпилированных C-расширений (`.so` / Cython / PyArmor) через приватный Docker Registry.
-   - Валидация лицензии: криптографическая офлайн-проверка (Ed25519) + периодический онлайн-Heartbeat.
+   - Deployment in the customer's isolated contour (Docker Compose / Helm / K8s).
+   - The client provides the compute resources, a local DBMS, S3 storage (MinIO/Ceph) and LLM providers (local Ollama or corporate API keys) themselves.
+   - Intellectual property protection: the core is delivered as compiled C extensions (`.so` / Cython / PyArmor) via a private Docker Registry.
+   - License validation: cryptographic offline verification (Ed25519) + a periodic online Heartbeat.
 
 ---
 
-## 2. Защита кода и дистрибуция On-Premise коробки
+## 2. Code protection and distribution of the On-Premise box
 
 ```
 ┌────────────────────────────────────────────────────────┐
-│             Исходный код ядра (Python Core)            │
+│             Core source code (Python Core)            │
 └──────────────────────────┬─────────────────────────────┘
                            │ CI/CD Pipeline (GitHub Actions)
                            ▼
 ┌────────────────────────────────────────────────────────┐
-│    Компиляция и Обфускация (Cython / PyArmor 8+)       │
+│    Compilation and Obfuscation (Cython / PyArmor 8+)  │
 │    - RAG Core / RRF Pipeline / Chunking Engine -> .so  │
 │    - License Validator & Cryptographic Guard -> .so    │
 └──────────────────────────┬─────────────────────────────┘
                            │ Multi-stage Docker Build
                            ▼
 ┌────────────────────────────────────────────────────────┐
-│     Приватный Docker Registry (ghcr.io / Harbor)       │
-│     - Образ: rag-core:enterprise-vX.Y (без .py файлов) │
-│     - Доступ клиенту по временному токену реестра      │
+│     Private Docker Registry (ghcr.io / Harbor)         │
+│     - Image: rag-core:enterprise-vX.Y (no .py files)   │
+│     - Client access via a temporary registry token     │
 └────────────────────────────────────────────────────────┘
 ```
 
-### Уровни защиты:
-- **Критическое ядро**: модули лицензирования, алгоритмы RRF, контекстного бюджетирования и чанкинга компилируются в бинарные модули (`.so`).
-- **Открытый слой**: контроллеры конфигурации и схемы FastAPI остаются открытыми для упрощения интеграции клиентом.
-- **Ограничения при истечении лицензии (Graceful Lockout / Restricted Mode)**:
-  - При отсутствии или истечении срока лицензии ядро блокирует выполнение RAG-поиска либо переходит в демонстрационный режим (лимит: 5 документов, отключение FlashRank, водяные знаки в ответах).
+### Protection levels:
+- **Critical core**: the licensing modules, the RRF algorithms, context budgeting and chunking are compiled into binary modules (`.so`).
+- **Open layer**: the configuration controllers and the FastAPI schemas remain open to simplify client integration.
+- **Restrictions on license expiry (Graceful Lockout / Restricted Mode)**:
+  - On a missing or expired license the core blocks RAG-search execution or switches to a demo mode (limit: 5 documents, FlashRank disabled, watermarks in answers).
 
 ---
 
-## 3. Криптографическая система лицензионных токенов (Ed25519)
+## 3. Cryptographic license-token system (Ed25519)
 
-Лицензионный токен представляет собой криптографически подписанный асимметричным ключом (Ed25519) компактный токен. **Канонический формат — `PASETO v4.public`** (однозначная криптосвязка версии/назначения, нет «alg-confusion»). `JWT (EdDSA)` допускается **только** как совместимый вариант для интеграций, требующих JWT; на одной инсталляции используется ровно один формат, выбранный вендором при выпуске. Короткий `Activation Code` вида `RAG-ENT-...` — это НЕ токен, а одноразовый код обмена на токен (см. §4.1).
+A license token is a compact token cryptographically signed with an asymmetric key (Ed25519). **The canonical format is `PASETO v4.public`** (an unambiguous cryptographic binding of version/purpose, no "alg confusion"). `JWT (EdDSA)` is allowed **only** as a compatible option for integrations requiring JWT; on a single installation exactly one format is used, chosen by the vendor at issuance. The short `Activation Code` like `RAG-ENT-...` is NOT a token, but a one-time code exchanged for a token (see §4.1).
 
-### 3.1. Структура полезной нагрузки (Payload):
+### 3.1. Payload structure:
 ```json
 {
   "license_id": "987fbc82-9a1b-4c3d-8e5f-0123456789ab",
@@ -76,116 +76,116 @@
   ]
 }
 ```
-*Примечание: Для бессрочных тарифов поле `expires_at` устанавливается в `null`.*
+*Note: for perpetual plans the `expires_at` field is set to `null`.*
 
-### 3.1a. Feature-флаги разделения доступа (Этап B/C)
+### 3.1a. Access-control feature flags (Stage B/C)
 
-Флаги гейтят **функционал**, а не код (код един, форков нет). Проверка — только на бэкенде.
+The flags gate **functionality**, not code (the code is single, no forks). The check is only on the backend.
 
-| Флаг | Что включает | При выключенном |
+| Flag | What it enables | When disabled |
 |---|---|---|
-| `enterprise_acl` | Группы (`groups`/`user_groups`) + точечный `document_acl` + `PolicyEvaluator` учитывает ACL/группы | Работает только плоский `access_level` (0–3) |
-| `collections` | Коллекции/базы знаний (`collections`/`document_collections`) и UI управления ими | Коллекции скрыты |
-| `sso_oidc` | Authenticated-режим виджета (OIDC/SAML → JWT с `subject + groups`, `Settings.oidc_*`) | Виджет только анонимный (`access_level = 0`) |
+| `enterprise_acl` | Groups (`groups`/`user_groups`) + fine-grained `document_acl` + `PolicyEvaluator` considers ACL/groups | Only the flat `access_level` (0-3) works |
+| `collections` | Collections/knowledge bases (`collections`/`document_collections`) and their management UI | Collections are hidden |
+| `sso_oidc` | The authenticated widget mode (OIDC/SAML → a JWT with `subject + groups`, `Settings.oidc_*`) | The widget is anonymous only (`access_level = 0`) |
 
-Базовая двухконтурная модель (`tenant_id` + `access_level` + RLS) — **всегда включена** и не гейтится флагом (см. [`storage_schema.md`](./storage_schema.md) §2.3–§2.4, [`modules_spec.md`](./modules_spec.md)).
+The base dual-contour model (`tenant_id` + `access_level` + RLS) is **always enabled** and not gated by a flag (see [`storage_schema.md`](./storage_schema.md) §2.3-§2.4, [`modules_spec.md`](./modules_spec.md)).
 
-> **Единый реестр feature-флагов — `enum LicenseFeature`** ([`modules_spec.md`](./modules_spec.md)): `web_widget`, `telegram`, `rest_sse`, `cli`, `enterprise_acl`, `collections`, `sso_oidc`, `hybrid_search`, `s3_connector`, `flashrank_rerank`, `observability_forward`. Это же множество — единственное допустимое для `licenses.features` (CHECK-констрейнт через `<@`, [`storage_schema.md`](./storage_schema.md)). Иных значений в `features` быть не может.
+> **The single feature-flag registry is `enum LicenseFeature`** ([`modules_spec.md`](./modules_spec.md)): `web_widget`, `telegram`, `rest_sse`, `cli`, `enterprise_acl`, `collections`, `sso_oidc`, `hybrid_search`, `s3_connector`, `flashrank_rerank`, `observability_forward`. This same set is the only one allowed for `licenses.features` (a CHECK constraint via `<@`, [`storage_schema.md`](./storage_schema.md)). No other values can be in `features`.
 >
-> ⚠️ **`observability_forward` vs `observability_forward_enabled`:** `observability_forward` — это **entitlement** (право по лицензии, элемент `features`), а `observability_forward_enabled` — **runtime-переключатель** клиента (`Settings`/`BoxDeployment`). Фактический форвард вендору включается только при одновременном выполнении: entitlement в лицензии **И** `observability_forward_enabled = true` **И** `telemetry_opt_out = false`.
+> ⚠️ **`observability_forward` vs `observability_forward_enabled`:** `observability_forward` is an **entitlement** (a license right, an element of `features`), while `observability_forward_enabled` is the client's **runtime switch** (`Settings`/`BoxDeployment`). The actual forwarding to the vendor is enabled only when all are true simultaneously: the entitlement in the license **AND** `observability_forward_enabled = true` **AND** `telemetry_opt_out = false`.
 
-### 3.2. Режимы лицензии и двухконтурная валидация:
-1. **Режим `airgap_enterprise` (Изолированный контур)**:
-   - Полностью автономная работа без исходящих сетевых соединений.
-   - В ядро зашит открытый публичный ключ (`Public Key`). Сервер проверяет цифровую подпись `Ed25519`, соответствие `hardware_id` и `expires_at` строго локально.
-   - Онлайн-heartbeat полностью отключен.
-2. **Режим `online_subscription` (Подписочная модель)**:
-   - Офлайн-проверка подписи Ed25519 + периодический онлайн-Heartbeat (каждые 24 часа).
-   - **Grace Period (72 часа)**: При временной недоступности сети интернет коробка продолжает полноценное функционирование в течение 72 часов с записью предупреждения в системный лог.
-   - По истечении Grace Period ядро переходит в `Restricted Mode` (ограничение поиска, водяные знаки, лимит документов).
-3. **Безопасность телеметрии (Data Privacy & Compliance)**:
-   - По умолчанию включен флаг `telemetry_opt_out: true` (полное отключение отправки телеметрии для 152-ФЗ / GDPR).
-   - При активной телеметрии передаётся **строго закрытый (allowlist) и исчерпывающий** набор обезличенных агрегированных технических полей, совпадающий с `HeartbeatPayload` ([`modules_spec.md`](./modules_spec.md)):
-     - `license_id`, `hardware_id` — идентификация инсталляции (не ПД);
-     - `version` (`image_version` коробки);
-     - `requests_last_period` — счётчик запросов за период;
-     - `uptime_seconds` — аптайм;
-     - `p95_latency_ms` — агрегированная задержка.
-   - Любое поле вне этого списка передавать запрещено. Тексты запросов пользователей, содержимое документов и персональные данные **ни при каких условиях не передаются**. Отключение — флагом `telemetry_opt_out: true` (значение по умолчанию); форвард в вендорский Langfuse дополнительно требует `observability_forward_enabled: false → true` (opt-in, см. ниже).
-   - **Наблюдаемость (Langfuse)**: в Box поднимается **собственный локальный Langfuse** (в compose коробки); его данные за пределы контура не уходят. Форвард трейсов/метрик в вендорский Langfuse — отдельный **feature-флаг лицензии** (`observability_forward`) и возможен **только** при `telemetry_opt_out: false`, строго в обезличенном виде (без текстов запросов, документов и ПД).
+### 3.2. License modes and dual-contour validation:
+1. **`airgap_enterprise` mode (isolated contour)**:
+   - Fully autonomous operation without outbound network connections.
+   - A public key (`Public Key`) is embedded into the core. The server verifies the `Ed25519` digital signature, the `hardware_id` match and `expires_at` strictly locally.
+   - The online heartbeat is fully disabled.
+2. **`online_subscription` mode (subscription model)**:
+   - Offline Ed25519 signature verification + a periodic online Heartbeat (every 24 hours).
+   - **Grace Period (72 hours)**: on a temporary internet outage the box continues full operation for 72 hours, writing a warning to the system log.
+   - After the Grace Period the core switches to `Restricted Mode` (limited search, watermarks, a document limit).
+3. **Telemetry security (Data Privacy & Compliance)**:
+   - By default the `telemetry_opt_out: true` flag is enabled (fully disabling telemetry sending for 152-FZ / GDPR).
+   - With telemetry active, a **strictly closed (allowlist) and exhaustive** set of anonymized aggregated technical fields is transmitted, matching `HeartbeatPayload` ([`modules_spec.md`](./modules_spec.md)):
+     - `license_id`, `hardware_id` — installation identification (not PII);
+     - `version` (the box's `image_version`);
+     - `requests_last_period` — a request counter for the period;
+     - `uptime_seconds` — uptime;
+     - `p95_latency_ms` — aggregated latency.
+   - Transmitting any field outside this list is forbidden. The texts of user queries, document content and personal data are **under no circumstances transmitted**. Disabling — via the `telemetry_opt_out: true` flag (the default value); forwarding to the vendor Langfuse additionally requires `observability_forward_enabled: false → true` (opt-in, see below).
+   - **Observability (Langfuse)**: in Box its **own local Langfuse** is started (in the box compose); its data does not leave the contour. Forwarding traces/metrics to the vendor Langfuse is a separate **license feature flag** (`observability_forward`) and is possible **only** when `telemetry_opt_out: false`, strictly in anonymized form (no query texts, documents or PII).
 
 ---
 
-## 4. Пользовательский сценарий активации и администрирования
+## 4. User activation and administration scenario
 
-### 4.1. Разделение понятий: Код активации vs Лицензионный токен
-- **Код активации (`Activation Code`)**: короткий буквенно-цифровой ключ вида `RAG-ENT-XXXX-YYYY-ZZZZ`, генерируемый при оплате заказа. Служит для первичного обращения коробки к мастер-серверу лицензий для получения подписанного токена.
-- **Лицензионный токен (`License Token`)**: полный криптографически подписанный Ed25519 JWT/PASETO, содержащий всю полезную нагрузку и публичный сертификат. Для Air-gapped сред клиент скачивает готовый файл токена из личного кабинета.
+### 4.1. Separation of concepts: Activation Code vs License Token
+- **Activation Code**: a short alphanumeric key like `RAG-ENT-XXXX-YYYY-ZZZZ`, generated upon order payment. It is used for the box's first request to the master license server to obtain a signed token.
+- **License Token**: a full cryptographically Ed25519-signed JWT/PASETO containing the entire payload and the public certificate. For air-gapped environments the client downloads a ready token file from their account.
 
-### 4.2. Способы ввода и активации:
-- **Для SaaS Cloud**:
-  - Владелец вводит токен/код в Web-админке или отправляет боту владельца: `/activate RAG-ENT-...`.
-  - Мастер-система валидирует ключ и обновляет лимиты тенанта в таблице `tenants`.
-- **Для On-Premise Box**:
-  - **Файл/Переменная окружения**: `LICENSE_TOKEN=eyJhbGci...` или путь `LICENSE_FILE_PATH=/etc/rag/license.key` в `docker-compose.yml`.
-  - **Локальная веб-админка**: Страница `/admin/license` с возможностью загрузить `.key` файл либо ввести код онлайн-активации.
+### 4.2. Input and activation methods:
+- **For SaaS Cloud**:
+  - The owner enters the token/code in the Web admin panel or sends it to the owner's bot: `/activate RAG-ENT-...`.
+  - The master system validates the key and updates the tenant limits in the `tenants` table.
+- **For On-Premise Box**:
+  - **File/environment variable**: `LICENSE_TOKEN=eyJhbGci...` or the path `LICENSE_FILE_PATH=/etc/rag/license.key` in `docker-compose.yml`.
+  - **Local web admin panel**: the `/admin/license` page with the ability to upload a `.key` file or enter an online activation code.
 
-### 4.3. Разделение криптографических контуров (License vs Session)
+### 4.3. Separation of the cryptographic contours (License vs Session)
 
-Лицензионный и сессионный ключи — два **строго независимых** криптографических контура. Их переиспользование запрещено.
+The license and session keys are two **strictly independent** cryptographic contours. Reusing them is forbidden.
 
-| Ключ | Алгоритм | Где живёт | Назначение |
+| Key | Algorithm | Where it lives | Purpose |
 |---|---|---|---|
-| `LICENSE_SIGNING_KEY` | **Ed25519** | Только у вендора, offline; приватная часть **никогда** не попадает в артефакт Box (в ядре зашит только публичный ключ) | Подпись лицензионных токенов |
-| `JWT_SECRET` | **HS256**, ≥ 32 байт | Per-install: генерируется при первом старте инстанса, ротируется при деплое | Подпись сессионных cookie-токенов админки (`fastapi-users`) |
+| `LICENSE_SIGNING_KEY` | **Ed25519** | Only at the vendor, offline; the private part **never** gets into the Box artifact (only the public key is embedded into the core) | Signing license tokens |
+| `JWT_SECRET` | **HS256**, ≥ 32 bytes | Per-install: generated on the instance's first start, rotated on deploy | Signing the admin's session cookie tokens (`fastapi-users`) |
 
-> ⚠️ **Переиспользовать `LICENSE_SIGNING_KEY` для подписи сессий запрещено.** Компрометация любого клиентского инстанса в этом случае позволила бы выписывать лицензии от имени вендора. Переиспользуется только *библиотека* (`pynacl` / `cryptography`) и код-паттерн, но не ключ.
+> ⚠️ **Reusing `LICENSE_SIGNING_KEY` to sign sessions is forbidden.** In that case the compromise of any client instance would allow issuing licenses on the vendor's behalf. Only the *library* (`pynacl` / `cryptography`) and the code pattern are reused, not the key.
 
-### 4.4. Активация через CLI (air-gapped)
-Для изолированных контуров, где Web-порт админки не открывается, активация дублируется CLI (`typer`): `rag-admin license activate --file /etc/rag/license.key` и `rag-admin ingest --path /data/docs`. Браузер не требуется.
+### 4.4. Activation via the CLI (air-gapped)
+For isolated contours where the admin web port is not open, activation is duplicated by the CLI (`typer`): `rag-admin license activate --file /etc/rag/license.key` and `rag-admin ingest --path /data/docs`. No browser needed.
 
-### 4.5. Фронтенд не валидирует лицензии
-React-бандл всегда читаем, поэтому **вся лицензионная и квотная логика живёт только на бэкенде**. SPA лишь отображает статус, полученный от сервера; любая проверка `if (license.valid)` на клиенте декоративна и не является механизмом защиты.
+### 4.5. The frontend does not validate licenses
+The React bundle is always readable, so **all licensing and quota logic lives only on the backend**. The SPA only displays the status received from the server; any `if (license.valid)` check on the client is decorative and is not a protection mechanism.
 
 ---
 
-## 4a. Скрытые метки для атрибуции утечек (Fingerprinting / Watermarking)
+## 4a. Hidden marks for leak attribution (Fingerprinting / Watermarking)
 
-Скрытые метки **не предотвращают** копирование — они дают **атрибуцию** и юридическое доказательство постфактум (кто источник утёкшей / пиратской копии). Реализация — пакет `rag_core.watermark` (живёт только в обфусцированном бэкенд-ядре; фронт меток не касается, см. §4.5).
+Hidden marks do **not prevent** copying — they provide **attribution** and legal proof after the fact (who is the source of the leaked / pirated copy). The implementation is the `rag_core.watermark` package (lives only in the obfuscated backend core; the frontend does not touch the marks, see §4.5).
 
-### Ключевой принцип — привязка к лицензии
-Все метки детерминированно выводятся из полей токена (§3.1) и секретного вендорского ключа:
+### The key principle — binding to the license
+All marks are deterministically derived from the token fields (§3.1) and a secret vendor key:
 
 ```
 fingerprint = HMAC-SHA256(vendor_key, license_id | client_id | build_id)
 ```
 
-`vendor_key` — **отдельный** вендорский секрет, его запрещено переиспользовать с `LICENSE_SIGNING_KEY` (§4.3). Клиент не может подделать чужой отпечаток, а вендор всегда воспроизведёт метку из утечки.
+`vendor_key` is a **separate** vendor secret, it must not be reused with `LICENSE_SIGNING_KEY` (§4.3). The client cannot forge someone else's fingerprint, and the vendor can always reproduce the mark from a leak.
 
-### Слои меток (многослойность — удаление одного слоя не убивает остальные)
+### Mark layers (multi-layered — removing one layer does not kill the others)
 
-| Слой | Модуль | Где «вытекает» | Назначение |
+| Layer | Module | Where it "leaks" | Purpose |
 |---|---|---|---|
-| Zero-width watermark | `zero_width` | Тексты ответов RAG, экспорты | Невидимые символы (`U+200B/200C/200D/FEFF`) кодируют отпечаток; читается скриптом из утёкшего текста |
-| Лингвистический watermark | `linguistic` | Тексты ответов | Детерминированный выбор синонимов по битам отпечатка; переживает «очистку» невидимых символов |
-| Canary-записи (honeytokens) | `canary` | Индекс / база знаний | Уникальные фейковые документы-ловушки; всплытие в чужом продукте = прямое доказательство |
-| Per-build stamp | `build_stamp` | `.so` / Docker-образ | Подписанный штамп `client_id/build_id` в артефакте: разные клиенты = разные хеши |
-| Heartbeat-fingerprint | `heartbeat` | Мастер-сервер (`online_subscription`, §3.2) | Отпечаток + `hardware_id` в heartbeat; один `license_id` с разных `hardware_id` → сигнал клонирования |
-| Вендорский реестр | `registry` | У вендора, offline | Реестр `license_id → fingerprint` для детерминированного воспроизведения метки (доказательство для суда) |
+| Zero-width watermark | `zero_width` | RAG answer texts, exports | Invisible characters (`U+200B/200C/200D/FEFF`) encode the fingerprint; read by a script from the leaked text |
+| Linguistic watermark | `linguistic` | Answer texts | Deterministic synonym choice by fingerprint bits; survives "cleaning" of invisible characters |
+| Canary records (honeytokens) | `canary` | Index / knowledge base | Unique fake trap documents; surfacing in a foreign product = direct proof |
+| Per-build stamp | `build_stamp` | `.so` / Docker image | A signed `client_id/build_id` stamp in the artifact: different clients = different hashes |
+| Heartbeat fingerprint | `heartbeat` | Master server (`online_subscription`, §3.2) | A fingerprint + `hardware_id` in the heartbeat; one `license_id` from different `hardware_id` → a cloning signal |
+| Vendor registry | `registry` | At the vendor, offline | A `license_id → fingerprint` registry for deterministic reproduction of the mark (proof for court) |
 
-### Критичные правила
-1. Логика генерации/проверки меток — только в обфусцированном ядре (фронт читаем, §4.5).
-2. Ключ отпечатка — отдельный вендорский секрет, не `LICENSE_SIGNING_KEY` (§4.3).
-3. **Тихая детекция**: не сигнализировать клиенту о наличии меток и не блокировать по ним немедленно — иначе их вычистят; доказательства собираются молча.
-4. Beacon/heartbeat с меткой — только обезличенно, с учётом `telemetry_opt_out` и 152-ФЗ / GDPR (§3.2) и с юридической оговоркой в оферте.
-5. В лицензионном соглашении фиксируется факт применения скрытой маркировки.
+### Critical rules
+1. The mark generation/verification logic is only in the obfuscated core (the frontend is readable, §4.5).
+2. The fingerprint key is a separate vendor secret, not `LICENSE_SIGNING_KEY` (§4.3).
+3. **Silent detection**: do not signal the client about the presence of marks and do not block on them immediately — otherwise they will be cleaned out; evidence is collected silently.
+4. A beacon/heartbeat with a mark — only anonymized, respecting `telemetry_opt_out` and 152-FZ / GDPR (§3.2) and with a legal clause in the offer.
+5. The fact of applying hidden marking is fixed in the license agreement.
 
 ---
 
-## 5. Встраиваемый Веб-виджет (ссылка)
+## 5. The embeddable Web widget (link)
 
-> **Единый источник** по Web-виджету (embed `<script>`, `data-api-url`, двухэтапный Session Handshake, Origin allowlist без wildcard, Shadow DOM, режимы Cloud/Box) — [`channels.md`](./channels.md) §4–§6. Дублировать описание здесь запрещено, чтобы не плодить рассинхрон.
+> **The single source** on the Web widget (the embed `<script>`, `data-api-url`, the two-step Session Handshake, the Origin allowlist without wildcard, Shadow DOM, the Cloud/Box modes) is [`channels.md`](./channels.md) §4-§6. Duplicating the description here is forbidden, to avoid breeding desync.
 
-Лицензионный инвариант этого документа (остаётся здесь):
-- Канал `web_widget` — это **feature-флаг лицензии** (`features: [..., "web_widget"]`, см. §3.1). Доступность виджета определяется лицензией тенанта.
-- **Клиент (React-бандл виджета) не валидирует лицензию** и не содержит квотной логики — см. §4.5. Любая проверка лицензии выполняется только на бэкенде.
+The licensing invariant of this document (stays here):
+- The `web_widget` channel is a **license feature flag** (`features: [..., "web_widget"]`, see §3.1). The widget's availability is determined by the tenant's license.
+- **The client (the widget's React bundle) does not validate the license** and contains no quota logic — see §4.5. Any license check is performed only on the backend.

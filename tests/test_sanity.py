@@ -1,7 +1,8 @@
-"""Smoke-тесты целостности спецификации (Фаза 1-2: прикладного кода ещё нет).
+"""Smoke tests for specification integrity (Phase 1-2: no application code yet).
 
-Пока нет production-кода, CI должен проверять хотя бы инварианты документов-ядра,
-иначе "зелёный CI" ничего не ловит. Тесты — только stdlib, без внешних зависимостей.
+Until there is production code, CI must check at least the invariants of the core documents,
+otherwise a "green CI" catches nothing. The tests use stdlib only, without external
+dependencies.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CORE = PROJECT_ROOT / "core"
 
-# Единый канонический реестр feature-флагов лицензии (enum LicenseFeature, modules_spec.md).
+# Single canonical registry of license feature flags (enum LicenseFeature, modules_spec.md).
 CANONICAL_LICENSE_FEATURES = [
     "web_widget",
     "telegram",
@@ -42,37 +43,40 @@ EXPECTED_CORE_DOCS = [
 
 
 def test_core_docs_present_and_non_empty() -> None:
-    """Все ключевые документы-ядра на месте и не пустые."""
+    """All key core documents are present and non-empty."""
     for name in EXPECTED_CORE_DOCS:
         doc = CORE / name
-        assert doc.is_file(), f"Отсутствует документ ядра: core/{name}"
-        assert doc.stat().st_size > 0, f"Пустой документ ядра: core/{name}"
+        assert doc.is_file(), f"Missing core document: core/{name}"
+        assert doc.stat().st_size > 0, f"Empty core document: core/{name}"
 
 
 def test_license_feature_enum_matches_ddl_check() -> None:
-    """Набор LicenseFeature в modules_spec.md совпадает с CHECK-констрейнтом в storage_schema.md.
+    """The LicenseFeature set in modules_spec.md matches the CHECK constraint in storage_schema.md.
 
-    Защита от рассинхрона реестра feature-флагов между Pydantic-enum и DDL.
+    Guards against desynchronization of the feature-flag registry between the Pydantic enum
+    and the DDL.
     """
     modules_spec = (CORE / "modules_spec.md").read_text(encoding="utf-8")
     storage_schema = (CORE / "storage_schema.md").read_text(encoding="utf-8")
     for feature in CANONICAL_LICENSE_FEATURES:
-        assert f'"{feature}"' in modules_spec, f"Фича {feature} не описана в modules_spec.md"
-        assert f'"{feature}"' in storage_schema, f"Фича {feature} не в CHECK storage_schema.md"
+        assert f'"{feature}"' in modules_spec, f"Feature {feature} not described in modules_spec.md"
+        assert f'"{feature}"' in storage_schema, (
+            f"Feature {feature} not in CHECK of storage_schema.md"
+        )
 
 
 def test_deprecated_telemetry_alias_not_used_as_canonical() -> None:
-    """Устаревшее имя telemetry_forward_enabled допустимо только как явно запрещённый alias."""
+    """telemetry_forward_enabled is allowed only as an explicitly forbidden alias."""
     modules_spec = (CORE / "modules_spec.md").read_text(encoding="utf-8")
     for line in modules_spec.splitlines():
         if "telemetry_forward_enabled" in line:
-            assert ("устаревш" in line.lower()) or ("alias" in line.lower()), (
-                "telemetry_forward_enabled должен упоминаться только как устаревший alias"
+            assert ("deprecated" in line.lower()) or ("alias" in line.lower()), (
+                "telemetry_forward_enabled must be mentioned only as a deprecated alias"
             )
 
 
 def test_rls_three_role_model_declared() -> None:
-    """В storage_schema.md зафиксирована трёхролевая RLS-модель (app_user член authenticated)."""
+    """storage_schema.md fixes the three-role RLS model (app_user is a member of authenticated)."""
     storage_schema = (CORE / "storage_schema.md").read_text(encoding="utf-8")
     assert "GRANT authenticated TO app_user" in storage_schema
     assert "BYPASSRLS" in storage_schema

@@ -6,16 +6,16 @@ on:
   pull_request:
     branches: [main]
 
-# Отменяем устаревшие запуски на том же ref (экономия раннеров).
+# Cancel stale runs on the same ref (save runners).
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# Два независимых пайплайна (back / front) с раздельным кэшем зависимостей
+# Two independent pipelines (back / front) with separate dependency caches
 # (core/eval_and_ops.md §3.6).
 jobs:
   backend:
-    name: Backend — Lint, Format, Types, Tests
+    name: Backend - Lint, Format, Types, Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -33,7 +33,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      # ⛔ Никаких `|| echo ok`: каждый шаг обязан падать при ошибке.
+      # No `|| echo ok`: every step must fail on error.
       - name: Ruff lint
         run: ruff check .
 
@@ -47,15 +47,15 @@ jobs:
         run: pytest -q
 
   frontend:
-    name: Frontend — Type-check & Build (pnpm workspaces)
+    name: Frontend - Type-check & Build (pnpm workspaces)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Версию pnpm берём из поля `packageManager` в package.json (pnpm@9.x).
-      # ⛔ Не указываем здесь `version:` — иначе action падает с "Multiple versions
-      # of pnpm specified" (конфликт входа и packageManager).
+      # Take the pnpm version from the `packageManager` field in package.json (pnpm@9.x).
+      # Do NOT specify `version:` here - otherwise the action fails with "Multiple versions
+      # of pnpm specified" (conflict between the input and packageManager).
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
 
@@ -64,12 +64,12 @@ jobs:
         with:
           node-version: "20"
 
-      # Кэш pnpm включается после фиксации pnpm-lock.yaml (`cache: pnpm` требует
-      # коммита lock-файла; до него — чистая установка, чтобы шаг не падал на cache-miss).
+      # The pnpm cache is enabled after committing pnpm-lock.yaml (`cache: pnpm` requires the
+      # lock file to be committed; before that - a clean install so the step does not fail on a cache miss).
       - name: Install workspace deps
         run: pnpm install --no-frozen-lockfile
 
-      # Реальные проверки (НЕ echo-заглушки): tsc --noEmit (lint) + Vite build.
+      # Real checks (NOT echo stubs): tsc --noEmit (lint) + Vite build.
       - name: Type-check (lint)
         run: pnpm -r lint
 

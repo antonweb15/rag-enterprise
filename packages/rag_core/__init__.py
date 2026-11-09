@@ -1,17 +1,18 @@
-"""`rag_core` — чистое ядро Enterprise RAG (контракты, абстракции, доменная логика).
+"""`rag_core` - the clean core of Enterprise RAG (contracts, abstractions, domain logic).
 
-Каноническое имя пакета ядра — `rag_core` (единое по всем `core/*.md` и коду;
-формы `packages/core`/`core/` считаются устаревшими). Пакет pip-installable
-(`pip install -e .`) и не зависит от транспортного слоя (`services/api`) или фронтенда.
+The canonical name of the core package is `rag_core` (uniform across all `core/*.md` and the
+code; the forms `packages/core`/`core/` are considered deprecated). The package is
+pip-installable (`pip install -e .`) and does not depend on the transport layer
+(`services/api`) or the frontend.
 
-На Этапе A здесь зафиксирован лишь каркас: Pydantic V2-модели и `Base*`-интерфейсы
-появятся на Этапе C (`core/modules_spec.md`).
+In Stage A only the skeleton is fixed here: Pydantic V2 models and `Base*` interfaces will
+appear in Stage C (`core/modules_spec.md`).
 """
 
 from __future__ import annotations
 
 __all__ = ["__version__"]
 
-#: Версия пакета ядра. Синхронизируется с `[project].version` в `pyproject.toml`
-#: (единый SemVer на Коробку и Облако, см. IMPLEMENTATION_PLAN.md §5).
+#: Core package version. Synchronized with `[project].version` in `pyproject.toml`
+#: (a single SemVer for Box and Cloud, see IMPLEMENTATION_PLAN.md §5).
 __version__ = "0.1.0"

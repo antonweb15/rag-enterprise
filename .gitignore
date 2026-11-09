@@ -70,7 +70,7 @@ ENV/
 env.bak/
 venv.bak/
 
-# Node / pnpm (фронтенд-воркспейсы apps/*)
+# Node / pnpm (frontend workspaces apps/*)
 node_modules/
 .pnpm-store/
 *.tsbuildinfo
@@ -107,7 +107,7 @@ logs/
 langfuse_cache/
 
 # Local Drafts
-# ВНИМАНИЕ: SPECIFICATION.md и IMPLEMENTATION_PLAN.md — ключевые версионируемые документы
-# (обзорный blueprint и исполнительный план продукта), НЕ игнорируются.
-# Ниже — только внутренний ревью-черновик вендора.
+# NOTE: SPECIFICATION.md and IMPLEMENTATION_PLAN.md are key versioned documents
+# (the overview blueprint and the product execution plan); they are NOT ignored.
+# Below is only the vendor's internal review draft.
 deepseek-criticism.md

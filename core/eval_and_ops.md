@@ -1,17 +1,17 @@
 # Evaluation, Observability & DevOps Specification (`core/eval_and_ops.md`)
 
-## 1. Регламент оценки качества (RAGAS & Golden Dataset)
+## 1. Quality evaluation procedure (RAGAS & Golden Dataset)
 
-### 1.1. Золотой верификационный датасет (`tests/data/golden_dataset.json`)
-Формат тестовых примеров (BEIR / QRELS совместимый):
+### 1.1. Golden verification dataset (`tests/data/golden_dataset.json`)
+The format of test examples (BEIR / QRELS compatible):
 ```json
 [
   {
     "id": "eval_001",
-    "question": "Каков максимальный размер родительского чанка в системе?",
-    "ground_truth_answer": "Размер родительского чанка составляет от 800 до 1200 токенов.",
+    "question": "What is the maximum size of a parent chunk in the system?",
+    "ground_truth_answer": "The parent chunk size is between 800 and 1200 tokens.",
     "ground_truth_contexts": [
-      "Parent Chunks: 800–1200 токенов (логические секции с метаданными заголовков и структуры)."
+      "Parent Chunks: 800-1200 tokens (logical sections with heading and structure metadata)."
     ],
     "ground_truth_chunk_ids": [
       "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
@@ -21,80 +21,80 @@
 ]
 ```
 
-### 1.2. Целевые метрики RAGAS & IR SLO
-- **Retrieval Metrics (на основе `ground_truth_chunk_ids`)**:
-  - `Hit Rate@5` $\ge 0.85$ (процент случаев, когда эталонный чанк вошел в Top-5).
+### 1.2. Target RAGAS & IR SLO metrics
+- **Retrieval Metrics (based on `ground_truth_chunk_ids`)**:
+  - `Hit Rate@5` $\ge 0.85$ (percentage of cases where the reference chunk made it into the Top-5).
   - `MRR@5` (Mean Reciprocal Rank) $\ge 0.75$.
   - `nDCG@5` $\ge 0.80$.
 - **Generation & Alignment Metrics (RAGAS)**:
-  - `Faithfulness` $\ge 0.90$ (отсутствие неподтвержденных галлюцинаций).
-  - `Answer Relevance` $\ge 0.85$ (точность ответа на поставленный вопрос).
-  - `Context Precision` $\ge 0.85$ (ранжирование релевантных контекстов выше шумовых).
-  - `Context Recall` $\ge 0.85$ (полнота извлечения всей необходимой для ответа информации).
+  - `Faithfulness` $\ge 0.90$ (no unsupported hallucinations).
+  - `Answer Relevance` $\ge 0.85$ (accuracy of the answer to the posed question).
+  - `Context Precision` $\ge 0.85$ (ranking relevant contexts above noisy ones).
+  - `Context Recall` $\ge 0.85$ (completeness of retrieving all information needed for the answer).
 
-### 1.3. Контракт-тесты безопасности доступа (Этап E, P1 — обязательны, пишутся вместе с Этапом A)
+### 1.3. Access security contract tests (Stage E, P1 — mandatory, written together with Stage A)
 
-Нерегрессионный набор; CI-блокирующий. Любой провал — merge запрещён.
+A non-regression set; CI-blocking. Any failure — merge forbidden.
 
-1. **Фильтр уровня в поиске**: пользователь с `access_level = 1` **не** получает чанки `access_level = 2/3` ни в одном плече — `search_dense`, `search_sparse`, `hybrid_search_rrf` (dense/sparse/hybrid).
-2. **RLS не «протекает» по пулу**: при переиспользовании соединения SQLAlchemy-пула `app.user_access_level` (и `app.current_tenant_id`), установленные через `SET LOCAL` в транзакции A, **не видны** в транзакции B; отсутствие GUC трактуется как `0` (Public, fail-closed).
-3. **Каскад ре-классификации**: смена `documents.access_level` в одной транзакции синхронизирует `parent_chunks.access_level` и `child_chunks.access_level`; initial backfill поднимает уровень старых parent-строк из `documents` (ранее Confidential не «раскрывается» как Public).
-4. **Ре-проверка цитат/гидрации**: ответ **не** содержит цитат и parent-секций на недоступные субъекту документы даже при прямом обращении к `parent_chunks` (защита дыры «parent без фильтра»).
-5. **ACL грант/отзыв — немедленный эффект + аудит**: выдача/отзыв `document_acl` вступает в силу на следующем запросе (без кэш-лага) и пишет `audit_log` (`acl.grant`/`acl.revoke`).
-6. **Запрет query-пути под `service_role`**: пользовательский retrieval, исполненный под ролью с `BYPASSRLS`, должен быть заблокирован тестом (иначе фильтр уровня/тенанта обходится).
-7. **Виджет fail-closed по уровню**: анонимная сессия виджета (`auth_mode = anonymous`) имеет `access_level = 0`; `oidc`-режим выдаёт уровень только из проверенного IdP-claim, пересчитанного на бэкенде (не из тела запроса).
+1. **Level filter in search**: a user with `access_level = 1` does **not** receive `access_level = 2/3` chunks in any arm — `search_dense`, `search_sparse`, `hybrid_search_rrf` (dense/sparse/hybrid).
+2. **RLS does not "leak" across the pool**: when a SQLAlchemy-pool connection is reused, `app.user_access_level` (and `app.current_tenant_id`) set via `SET LOCAL` in transaction A are **not visible** in transaction B; a missing GUC is treated as `0` (Public, fail-closed).
+3. **Re-classification cascade**: changing `documents.access_level` in a single transaction synchronizes `parent_chunks.access_level` and `child_chunks.access_level`; the initial backfill raises the level of old parent rows from `documents` (a previously Confidential item is not "revealed" as Public).
+4. **Citation/hydration re-check**: the answer does **not** contain citations and parent sections for documents inaccessible to the subject, even on a direct access to `parent_chunks` (protection of the "parent without filter" hole).
+5. **ACL grant/revoke — immediate effect + audit**: granting/revoking `document_acl` takes effect on the next request (without cache lag) and writes `audit_log` (`acl.grant`/`acl.revoke`).
+6. **Forbidding the query path under `service_role`**: user retrieval executed under a role with `BYPASSRLS` must be blocked by the test (otherwise the level/tenant filter is bypassed).
+7. **Widget fail-closed by level**: an anonymous widget session (`auth_mode = anonymous`) has `access_level = 0`; the `oidc` mode grants a level only from a verified IdP claim recomputed on the backend (not from the request body).
 
 ---
 
-## 2. Наблюдаемость и Трейсинг (Langfuse Observability)
+## 2. Observability and Tracing (Langfuse Observability)
 
-### 2.1. Три сигнала — не смешивать
+### 2.1. Three signals — do not mix
 
-| Сигнал | Инструмент | Что несёт | Кто видит |
+| Signal | Tool | What it carries | Who sees it |
 |---|---|---|---|
-| **Tracing** (дерево спанов) | **Langfuse** | запрос → intent → retrieval → rerank → генерация, латентности, токены, стоимость | оператор тенанта / суперадмин |
-| **Structured logging** | стандартный logger → Loki/DB | ошибки, события, аудит | оператор тенанта |
-| **Telemetry / Heartbeat** | `/licenses/heartbeat` + `box_deployments` | обезличенные счётчики: запросы, аптайм, p95 | только вендор |
+| **Tracing** (span tree) | **Langfuse** | request → intent → retrieval → rerank → generation, latencies, tokens, cost | tenant operator / super-admin |
+| **Structured logging** | standard logger → Loki/DB | errors, events, audit | tenant operator |
+| **Telemetry / Heartbeat** | `/licenses/heartbeat` + `box_deployments` | anonymized counters: requests, uptime, p95 | vendor only |
 
-Tracing, logging и telemetry **не взаимозаменяемы**. Сырые трейсы живут только в Langfuse; в Postgres — только агрегаты/счётчики.
+Tracing, logging and telemetry are **not interchangeable**. Raw traces live only in Langfuse; in Postgres — only aggregates/counters.
 
-### 2.2. Провайдер и мультитенантность
+### 2.2. Provider and multi-tenancy
 
-- **Провайдер**: **self-hosted Langfuse** на инфраструктуре вендора — единственный production-вариант (Cloud Free Tier — только dev).
-- **Модель B — один проект на тенанта** (изоляция для браузерного read-only доступа). Организация — одна, вендорская.
-- **Суперадмин** имеет роль `Admin`/`Owner` на организации → видит все проекты. **Облачный клиент** — пользователь с ролью `None` на организации + `Viewer` на своём проекте → видит **только свой проект**, **только чтение**, не видит список проектов организации.
-- **Регистрация отключена**: `AUTH_DISABLE_SIGNUP=true`; проекты/пользователей/ключи заводит вендор (Langfuse Org API / SCIM; на старте допустимо вручную в UI).
-- **Доступ клиента** — из браузера, по deep-link `https://<langfuse-host>/project/<project_id>`; дубль интерфейса чтения в админке **не строится** (см. [`admin_panel.md`](./admin_panel.md) §11).
+- **Provider**: **self-hosted Langfuse** on the vendor's infrastructure — the only production option (Cloud Free Tier — dev only).
+- **Model B — one project per tenant** (isolation for browser read-only access). The organization is single, the vendor's.
+- **The super-admin** has the `Admin`/`Owner` role at the organization → sees all projects. **The cloud client** is a user with the `None` role at the organization + `Viewer` on their project → sees **only their project**, **read-only**, does not see the organization's project list.
+- **Signup disabled**: `AUTH_DISABLE_SIGNUP=true`; projects/users/keys are created by the vendor (Langfuse Org API / SCIM; initially manual in the UI is acceptable).
+- **Client access** — from the browser, via the deep link `https://<langfuse-host>/project/<project_id>`; a duplicate read interface in the admin panel is **not built** (see [`admin_panel.md`](./admin_panel.md) §11).
 
-### 2.3. Trace-контракт
+### 2.3. Trace contract
 
-Каждый входящий запрос формирует `Trace` в Langfuse с деревом спанов:
-1. `Span: intent_routing` (вход, intent, score, latency).
+Every incoming request forms a `Trace` in Langfuse with a span tree:
+1. `Span: intent_routing` (input, intent, score, latency).
 2. `Span: query_condensation` (chat_history, raw_query, standalone_query).
-3. `Span: hybrid_retrieval` (dense_time, sparse_time, `chunk_ids` + `scores` — **без сырого текста чанков**).
+3. `Span: hybrid_retrieval` (dense_time, sparse_time, `chunk_ids` + `scores` — **without the raw chunk text**).
 4. `Span: reranking` (flashrank_scores, confidence_gate_passed).
 5. `Generation: llm_call` (prompt_tokens, completion_tokens, total_cost, model_id).
 
-**Обязательные атрибуты каждого trace** (`TraceContext`, см. [`modules_spec.md`](./modules_spec.md)):
-`tenant_id`, `environment` (`saas_cloud`/`on_premise_box`), `deployment_id` (для коробок), `channel`, `session_id`, `user_id`, `access_level`, `license_id`.
+**Mandatory attributes of every trace** (`TraceContext`, see [`modules_spec.md`](./modules_spec.md)):
+`tenant_id`, `environment` (`saas_cloud`/`on_premise_box`), `deployment_id` (for boxes), `channel`, `session_id`, `user_id`, `access_level`, `license_id`.
 
-- **Маскировка**: поля с ПД логируются с `mask`; сырой текст документов в трейсы **не пишется**.
+- **Masking**: fields with PII are logged with `mask`; the raw document text is **not written** into traces.
 - **Sampling + retention** — per environment (`trace_sample_rate`, `trace_retention_days`).
-- **Online Feedback**: 👍/👎 обновляет trace по `trace_id` (score `+1`/`-1`); `messages.langfuse_trace_id` связывает строку БД с трейсом.
+- **Online Feedback**: 👍/👎 updates the trace by `trace_id` (score `+1`/`-1`); `messages.langfuse_trace_id` links the DB row with the trace.
 
-### 2.4. Коробка (on-premise)
+### 2.4. Box (on-premise)
 
-- В compose коробки добавляется **свой Langfuse** (локальный, за `127.0.0.1`/внутренней сетью); клиент — **владелец** инстанса (полный доступ).
-- RAG-бэкенд коробки пишет трейсы туда автоматически (env `LANGFUSE_*` генерируются при первом старте).
-- Вендору уходит **только обезличенный heartbeat**; форвард трейсов/метрик в вендорский Langfuse — строго opt-in при `telemetry_opt_out: false` и feature-флаге лицензии (см. [`licensing_and_distribution.md`](./licensing_and_distribution.md)).
+- The box compose adds **its own Langfuse** (local, behind `127.0.0.1`/the internal network); the client is the **owner** of the instance (full access).
+- The box RAG backend writes traces there automatically (the `LANGFUSE_*` env is generated on the first start).
+- Only an **anonymized heartbeat** goes to the vendor; forwarding traces/metrics to the vendor Langfuse is strictly opt-in when `telemetry_opt_out: false` and the license feature flag is set (see [`licensing_and_distribution.md`](./licensing_and_distribution.md)).
 
-### 2.5. Отказоустойчивость
+### 2.5. Fault tolerance
 
-Запись трейсов — **fire-and-forget / буфер**: отказ Langfuse не блокирует ответ RAG.
+Trace writing is **fire-and-forget / buffered**: a Langfuse failure does not block the RAG answer.
 
 ---
 
-## 3. Контейнеризация и Docker (Multi-stage)
+## 3. Containerization and Docker (Multi-stage)
 
 ### 3.1. `Dockerfile`
 ```dockerfile
@@ -122,9 +122,9 @@ ENV PYTHONUNBUFFERED=1
 COPY packages/rag_core/ packages/rag_core/
 COPY services/api/ services/api/
 
-# Default CMD — generic API-приложение (конкретный --app переопределяется в docker-compose
-# для каждого контура: admin-api / widget-api / telegram-bot / ingestion-worker).
-# Telegram-бот — лишь один из каналов, не дефолт.
+# Default CMD — a generic API application (the concrete --app is overridden in docker-compose
+# for each contour: admin-api / widget-api / telegram-bot / ingestion-worker).
+# The Telegram bot is just one of the channels, not the default.
 CMD ["uvicorn", "services.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
@@ -135,8 +135,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    # Отдаёт Admin SPA статикой + роутеры /api/v1/admin/*.
-    # В On-Premise Box слушает строго 127.0.0.1 (доступ только через SSH-туннель / reverse-proxy).
+    # Serves the Admin SPA static files + the /api/v1/admin/* routers.
+    # In On-Premise Box it listens strictly on 127.0.0.1 (access only via an SSH tunnel / reverse proxy).
     command: uvicorn services.api.admin_app:app --host 127.0.0.1 --port 8001
     env_file: .env
     restart: unless-stopped
@@ -147,8 +147,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    # Публичный, анонимный, высоконагруженный контур — вынесен в отдельный --app,
-    # готов к горизонтальному масштабированию (docker compose up --scale widget-api=N).
+    # The public, anonymous, high-load contour — moved to a separate --app,
+    # ready for horizontal scaling (docker compose up --scale widget-api=N).
     command: uvicorn services.api.widget_app:app --host 0.0.0.0 --port 8002
     env_file: .env
     restart: unless-stopped
@@ -188,17 +188,17 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
-  # Observability: self-hosted Langfuse (см. §2). Полный стек Langfuse (web + worker +
-  # postgres + clickhouse + redis + s3/minio) разворачивается по официальному compose
-  # (langfuse/langfuse); ниже — привязка сервиса к общей сети. В Box слушает 127.0.0.1.
+  # Observability: self-hosted Langfuse (see §2). The full Langfuse stack (web + worker +
+  # postgres + clickhouse + redis + s3/minio) is deployed per the official compose
+  # (langfuse/langfuse); below is just the service binding to the shared network. In Box it listens on 127.0.0.1.
   langfuse:
     image: langfuse/langfuse:latest
     environment:
-      AUTH_DISABLE_SIGNUP: "true"       # самоРегистрация отключена — доступ выдаёт вендор
+      AUTH_DISABLE_SIGNUP: "true"       # self-signup disabled — access is granted by the vendor
       NEXTAUTH_URL: http://localhost:3000
     env_file: .env                      # DATABASE_URL, CLICKHOUSE_URL, REDIS_URL, SALT, ENCRYPTION_KEY, LANGFUSE_*
     ports:
-      - "3000:3000"                     # в Box — только 127.0.0.1:3000
+      - "3000:3000"                     # in Box — only 127.0.0.1:3000
     restart: unless-stopped
 
 volumes:
@@ -207,45 +207,45 @@ volumes:
 
 ---
 
-## 3.3. Миграции БД (Alembic, additive-only)
+## 3.3. DB migrations (Alembic, additive-only)
 
-- **Старт контейнера**: entrypoint выполняет `alembic upgrade head` перед запуском приложения.
-- **Pre-upgrade backup hook**: перед миграцией в Box делается `pg_dump` текущей БД (защита от упавшего апдейта на клиентском Postgres).
-- **Additive-only**: деструктивные операции (`DROP COLUMN`, `DROP TABLE`, сужающий `ALTER TYPE`) запрещены; удаление полей — только через deprecation в следующих мажорных версиях.
+- **Container start**: the entrypoint runs `alembic upgrade head` before starting the application.
+- **Pre-upgrade backup hook**: before the migration, in Box a `pg_dump` of the current DB is made (protection against a failed update on the client's Postgres).
+- **Additive-only**: destructive operations (`DROP COLUMN`, `DROP TABLE`, a narrowing `ALTER TYPE`) are forbidden; removing fields — only through deprecation in future major versions.
 
-## 3.4. Реалтайм-статусы инжеста (Postgres LISTEN/NOTIFY)
+## 3.4. Real-time ingest statuses (Postgres LISTEN/NOTIFY)
 
-- `GET /api/v1/admin/ingest/stream` (SSE) транслирует статусы `pending → processing → indexed | failed`.
-- Источник событий — **Postgres `LISTEN/NOTIFY`** (worker делает `NOTIFY` при смене `documents.status`), fallback — polling таблицы `documents.status`.
-- ⛔ **In-memory pub/sub запрещён**: при `--workers > 1` SSE в одном воркере не увидит событий taskiq-воркера без общего брокера.
+- `GET /api/v1/admin/ingest/stream` (SSE) broadcasts the statuses `pending → processing → indexed | failed`.
+- The event source is **Postgres `LISTEN/NOTIFY`** (the worker does `NOTIFY` on a `documents.status` change), the fallback is polling the `documents.status` table.
+- ⛔ **In-memory pub/sub is forbidden**: with `--workers > 1` the SSE in one worker will not see events from the taskiq worker without a shared broker.
 
-## 3.5. Rate-limiting (раздельные политики)
+## 3.5. Rate-limiting (separate policies)
 
-| Контур | Политика |
+| Contour | Policy |
 |---|---|
-| `widget-api` (public) | Жёсткий лимит по IP и `session_id`, защита от DDoS/парсинга; отдельный процесс — DDoS на виджет не роняет админку |
-| `admin-api` (private) | Мягкий лимит по аутентифицированному пользователю; доступ только из доверенного контура |
+| `widget-api` (public) | A hard limit by IP and `session_id`, protection against DDoS/scraping; a separate process — a DDoS on the widget does not take down the admin panel |
+| `admin-api` (private) | A soft limit by the authenticated user; access only from the trusted contour |
 
 ---
 
-## 3.6. Монорепо и тулинг
+## 3.6. Monorepo and tooling
 
-Структура `apps/admin` + `apps/widget` + `services/api` + `packages/rag_core` обслуживается двумя независимыми тулчейнами:
-- **Frontend**: `pnpm workspaces` (сборка Vite → `dist/`, который `admin-api` отдаёт как `StaticFiles`).
-- **Backend**: `uv` (или Poetry) workspace для Python-пакетов.
-- **CI**: два пайплайна (front / back) с независимым кэшем зависимостей.
+The structure `apps/admin` + `apps/widget` + `services/api` + `packages/rag_core` is served by two independent toolchains:
+- **Frontend**: `pnpm workspaces` (building Vite → `dist/`, which `admin-api` serves as `StaticFiles`).
+- **Backend**: a `uv` (or Poetry) workspace for the Python packages.
+- **CI**: two pipelines (front / back) with independent dependency caches.
 
 ---
 
-## 4. CI/CD Пайплайн (GitHub Actions & Protected Box Distribution)
+## 4. CI/CD Pipeline (GitHub Actions & Protected Box Distribution)
 
-Workflow-файл `.github/workflows/ci.yml` (реализован в репозитории; CI пинится на Python 3.11):
-1. **Lint & Format & Static Check**: `ruff check .`, `ruff format --check .` (форматирование проверяется, а не только линт) и `mypy` (строгая проверка без проглатывания ошибок; по мере появления кода цель — `mypy services/ packages/`). ⛔ Запрещены «заглушки» вида `ruff check . || echo ok` — шаг обязан падать при ошибках.
-2. **Unit & Integration Tests**: `pytest tests/ -v` (проверка изоляции тенантов, валидации токенов Ed25519, RRF и S3 коннектора).
-3. **Evaluation Gate**: Запуск `python -m tests.eval_ragas` — проверка, что метрики качества на `golden_dataset.json` не деградировали ниже допустимого порога SLO.
-4. **On-Premise Core Protection & Image Release** (при тегах `v*`):
-   - Компиляция модулей ядра (`rag_core/licensing/`, `rag_core/retrieval/`) в `.so` через Cython/PyArmor.
-   - Сборка закрытого Docker-образа `rag-core:enterprise-vX.Y`.
-   - Публикация в приватный GitHub Container Registry (`ghcr.io/your-org/rag-core`).
-   > **Честная оценка границ защиты.** Компиляция в `.so`/обфускация — это лишь *повышение стоимости* реверса, а НЕ надёжная защита IP: образ всё равно исполняется у клиента и содержит достаточно артефактов для анализа. Реальную защиту обеспечивают **(а) водяные знаки/канареечные метки для атрибуции утечки** (см. `core/licensing_and_distribution.md` §4a) и **(б) юридический контур** (лицензионный договор, подписанные токены Ed25519, CRL, heartbeat-детекция клонирования), а не бинарная обфускация.
-5. **Secrets**: Управление конфиденциальными переменными (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `LICENSE_SIGNING_KEY`, `JWT_SECRET`, `GROQ_API_KEY`, `TELEGRAM_BOT_TOKEN`) строго через **GitHub Actions Secrets**.
+The workflow file `.github/workflows/ci.yml` (implemented in the repository; CI is pinned to Python 3.11):
+1. **Lint & Format & Static Check**: `ruff check .`, `ruff format --check .` (formatting is checked, not only the lint) and `mypy` (strict check without swallowing errors; as code appears, the target is `mypy services/ packages/`). ⛔ "Stubs" like `ruff check . || echo ok` are forbidden — the step must fail on errors.
+2. **Unit & Integration Tests**: `pytest tests/ -v` (checking tenant isolation, Ed25519 token validation, RRF and the S3 connector).
+3. **Evaluation Gate**: running `python -m tests.eval_ragas` — checking that the quality metrics on `golden_dataset.json` have not degraded below the acceptable SLO threshold.
+4. **On-Premise Core Protection & Image Release** (on `v*` tags):
+   - Compiling the core modules (`rag_core/licensing/`, `rag_core/retrieval/`) into `.so` via Cython/PyArmor.
+   - Building the closed Docker image `rag-core:enterprise-vX.Y`.
+   - Publishing to the private GitHub Container Registry (`ghcr.io/your-org/rag-core`).
+   > **An honest assessment of the protection boundaries.** Compilation into `.so`/obfuscation is only a *cost increase* for reverse-engineering, NOT reliable IP protection: the image still runs on the client and contains enough artifacts for analysis. Real protection is provided by **(a) watermarks/canary marks for leak attribution** (see `core/licensing_and_distribution.md` §4a) and **(b) the legal contour** (the license agreement, signed Ed25519 tokens, CRL, heartbeat clone detection), not binary obfuscation.
+5. **Secrets**: management of confidential variables (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `LICENSE_SIGNING_KEY`, `JWT_SECRET`, `GROQ_API_KEY`, `TELEGRAM_BOT_TOKEN`) strictly through **GitHub Actions Secrets**.

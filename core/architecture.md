@@ -1,15 +1,15 @@
 # Architecture & Data Flow Specification (`core/architecture.md`)
 
-## 1. Обзор архитектуры
+## 1. Architecture overview
 
-Система построена по слоистой, слабосвязанной архитектуре (Clean Architecture / Hexagonal) с поддержкой асинхронной обработки и Dependency Injection.
+The system is built on a layered, loosely coupled architecture (Clean Architecture / Hexagonal) with support for asynchronous processing and Dependency Injection.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           1. Channel Ingress Layer                          │
-│   ОСНОВНЫЕ: Web Widget (Embed JS / SSE / Shadow DOM) + Admin SPA (приватный)│
-│   - Admin SPA: Vite+React, /api/v1/admin/*, cookie-сессии fastapi-users     │
-│   - Telegram Bot (aiogram 3.x) — ОДИН ИЗ каналов BaseChannel, не основной   │
+│   PRIMARY: Web Widget (Embed JS / SSE / Shadow DOM) + Admin SPA (private)   │
+│   - Admin SPA: Vite+React, /api/v1/admin/*, fastapi-users cookie sessions   │
+│   - Telegram Bot (aiogram 3.x) — ONE OF the BaseChannel channels, not primary│
 │   - Pluggable Channel Abstraction (FastAPI REST / SSE, CLI/typer)           │
 └──────────────────────────────────────┬──────────────────────────────────────┘
                                        │ (raw query + tenant_id + user_id + session_id)
@@ -28,7 +28,7 @@
 │   - Dense Embedding: BAAI/bge-m3 (1024 dim, Cosine)                         │
 │   - Sparse Vector: BAAI/bge-m3 sparsevec                                    │
 │   - BaseVectorStore.search_dense / .search_sparse (Top-30, ef_search = 40)   │
-│   - RRF в application-layer (α=0.6, β=0.4, k=60) + tenant_id & access_level │
+│   - RRF in the application layer (α=0.6, β=0.4, k=60) + tenant_id & access_level│
 └──────────────────────────────────────┬──────────────────────────────────────┘
                                        │ (Top-30 child candidates)
                                        ▼
@@ -59,79 +59,79 @@
 
 ---
 
-## 1.1. Режимы развертывания (Deployment Modes)
+## 1.1. Deployment Modes
 
-Один код и один билд SPA на оба режима; различия — только через runtime-конфиг `GET /api/v1/admin/config`. Форки запрещены.
+A single codebase and a single SPA build for both modes; the differences come only through the runtime config `GET /api/v1/admin/config`. Forks are forbidden.
 
-| Фича | `saas_cloud` | `on_premise_box` |
+| Feature | `saas_cloud` | `on_premise_box` |
 |---|---|---|
-| Управление тенантами (CRUD, кросс-тенантный вид оператора) | ✅ | ❌ (один тенант) |
-| Выдача/продление лицензий из панели вендора | ✅ | ❌ |
-| Экран активации лицензии (код / `.key` / PASETO) | ⚠️ только статус | ✅ |
+| Tenant management (CRUD, cross-tenant operator view) | ✅ | ❌ (single tenant) |
+| License issuance/renewal from the vendor panel | ✅ | ❌ |
+| License activation screen (code / `.key` / PASETO) | ⚠️ status only | ✅ |
 | Machine Fingerprint (`hardware_id`) | ❌ | ✅ |
-| Heartbeat-статус + Grace Period | ✅ | ✅ (в `online_subscription`) |
-| Локальный файл-менеджер (local FS через `BaseObjectStorage`) | ❌ (S3/R2) | ✅ |
-| Коннекторы внешних хранилищ (S3/MinIO/R2/Confluence) | ✅ | ✅ |
-| CLI-дублёр (`typer`) для air-gapped | ⚠️ опционально | ✅ обязательно |
-| Bind-адрес админки | `0.0.0.0` за reverse-proxy | `127.0.0.1` + SSH-туннель |
-| Отдача SPA | Nginx / CDN | FastAPI `StaticFiles` (один контейнер) |
+| Heartbeat status + Grace Period | ✅ | ✅ (in `online_subscription`) |
+| Local file manager (local FS via `BaseObjectStorage`) | ❌ (S3/R2) | ✅ |
+| External storage connectors (S3/MinIO/R2/Confluence) | ✅ | ✅ |
+| CLI fallback (`typer`) for air-gapped | ⚠️ optional | ✅ required |
+| Admin bind address | `0.0.0.0` behind a reverse proxy | `127.0.0.1` + SSH tunnel |
+| SPA serving | Nginx / CDN | FastAPI `StaticFiles` (single container) |
 
-Детали приватного операторского контура — в [`admin_panel.md`](./admin_panel.md).
-Единый источник по пользовательским каналам доставки (Web Widget, Telegram, REST/SSE, CLI), handshake виджета, брендингу и режимам Cloud/Box — [`channels.md`](./channels.md).
+Details of the private operator contour are in [`admin_panel.md`](./admin_panel.md).
+The single source for the user delivery channels (Web Widget, Telegram, REST/SSE, CLI), the widget handshake, branding and the Cloud/Box modes is [`channels.md`](./channels.md).
 
-> ⚠️ Строка «Выдача/продление лицензий из панели вендора» относится к **отдельному** суперадминскому контуру вендора, а не к тенантной админке: он описан в [`vendor_backoffice.md`](./vendor_backoffice.md) (роли `BackofficeRole`, клиенты, коды, реестр коробок, break-glass impersonation), а серверная половина лицензирования (issuance/revocation/heartbeat/CRL) — в [`license_server.md`](./license_server.md).
-
----
-
-## 1.2. Observability Plane (отдельная плоскость)
-
-Наблюдаемость — **отдельная плоскость**, не подменяет data plane и лицензирование:
-
-- **Cloud**: один self-hosted Langfuse вендора; **один проект на тенанта** (модель B); облачный клиент читает **только свой проект** (роль `Viewer`) из браузера; суперадмин видит все проекты на уровне организации.
-- **Box**: собственный локальный Langfuse в compose коробки (клиент — владелец); вендору уходит только обезличенный heartbeat (`/licenses/heartbeat`).
-- **Запись трейсов** — fire-and-forget: отказ Langfuse не блокирует ответ RAG (см. [`eval_and_ops.md`](./eval_and_ops.md) §2).
+> ⚠️ The row "License issuance/renewal from the vendor panel" refers to the **separate** vendor super-admin contour, not the tenant admin panel: it is described in [`vendor_backoffice.md`](./vendor_backoffice.md) (the `BackofficeRole` roles, customers, codes, box registry, break-glass impersonation), while the server half of licensing (issuance/revocation/heartbeat/CRL) is in [`license_server.md`](./license_server.md).
 
 ---
 
-## 2. Жизненный цикл обработки запроса (Query Flow)
+## 1.2. Observability Plane (a separate plane)
 
-1. **Входное событие** (канало-нейтрально): адаптер канала (Web Widget / Telegram / REST-SSE / CLI) нормализует нативное сообщение в `ChannelEvent` (`event_type`, `user_id`, `tenant_id`, `channel`, `channel_user_id`, `text`, `payload`). Retrieval-ядро принимает **только** `ChannelEvent` и не знает о конкретном канале (см. [`channels.md`](./channels.md), [`modules_spec.md`](./modules_spec.md)).
-2. **Аутентификация, Resolution субъекта & вычисление эффективного доступа**:
-   - `channel_user_id` (внешний ID канала) сверяется с таблицей `users` (или кэшем сессии); для authenticated-виджета — субъект из проверенного OIDC/SAML (`external_subject`, см. [`channels.md`](./channels.md)).
-   - **Resolution субъекта**: собирается `UserContext` (`access_level` + `group_ids`), значения берутся **с бэкенда** (`users`/`user_groups`/IdP-claim), **никогда** из payload клиента.
-   - **PolicyEvaluator.effective_access(user) → `AccessDecision`**: единая точка решения (PDP) вычисляет `effective_access_level = max(user, groups)` и, при включённом `enterprise_acl`, `allowed_document_ids` (из `document_acl`). При выключенном флаге — чистый `access_level`. fail-closed: нет тенанта/уровня → пустая выборка.
-3. **Rate Limiting**: `ThrottlingMiddleware` проверяет лимит (не более 5 сообщений в минуту на `user_id`).
+Observability is a **separate plane**, it does not replace the data plane or licensing:
+
+- **Cloud**: a single self-hosted vendor Langfuse; **one project per tenant** (model B); the cloud client reads **only its own project** (role `Viewer`) from the browser; the super-admin sees all projects at the organization level.
+- **Box**: its own local Langfuse in the box compose (the client is the owner); only an anonymized heartbeat (`/licenses/heartbeat`) goes to the vendor.
+- **Trace writing** is fire-and-forget: a Langfuse failure does not block the RAG answer (see [`eval_and_ops.md`](./eval_and_ops.md) §2).
+
+---
+
+## 2. Request processing lifecycle (Query Flow)
+
+1. **Input event** (channel-neutral): the channel adapter (Web Widget / Telegram / REST-SSE / CLI) normalizes the native message into a `ChannelEvent` (`event_type`, `user_id`, `tenant_id`, `channel`, `channel_user_id`, `text`, `payload`). The retrieval core accepts **only** a `ChannelEvent` and knows nothing about the specific channel (see [`channels.md`](./channels.md), [`modules_spec.md`](./modules_spec.md)).
+2. **Authentication, subject resolution & effective-access computation**:
+   - `channel_user_id` (the channel's external ID) is matched against the `users` table (or the session cache); for an authenticated widget — the subject from a verified OIDC/SAML (`external_subject`, see [`channels.md`](./channels.md)).
+   - **Subject resolution**: a `UserContext` is assembled (`access_level` + `group_ids`); the values are taken **from the backend** (`users`/`user_groups`/IdP claim), **never** from the client payload.
+   - **PolicyEvaluator.effective_access(user) → `AccessDecision`**: the single decision point (PDP) computes `effective_access_level = max(user, groups)` and, when `enterprise_acl` is enabled, `allowed_document_ids` (from `document_acl`). When the flag is off — plain `access_level`. fail-closed: no tenant/level → empty result set.
+3. **Rate Limiting**: `ThrottlingMiddleware` checks the limit (no more than 5 messages per minute per `user_id`).
 4. **Intent Routing**:
-   - `chit_chat` $\to$ быстрый ответ легковесной LLM без обращения к БД.
-   - `meta_command` $\to$ справка о состоянии системы и доступных источниках.
-   - `rag_search` $\to$ передача в конвейер RAG.
-5. **Конденсация вопроса (Multi-turn)**:
-   - Извлекаются последние $K=5$ сообщений диалога из таблицы `messages`.
-   - Если вопрос зависит от контекста, легковесный LLM генерирует самостоятельный `standalone_query`.
-6. **Векторизация и Sparse-кодирование**:
-   - `bge-m3` в один проход генерирует плотный вектор (1024 float) и разреженный вектор (sparse dictionary).
-7. **Гибридный поиск (`BaseVectorStore` + `Retriever`)**:
-   - Вызываются **раздельные плечи контракта**: `BaseVectorStore.search_dense(...)` и `BaseVectorStore.search_sparse(...)`.
-   - Слияние выполняется **в application-layer** (`Retriever.fuse_rrf`), а не в SQL. SQL-функция `hybrid_search_rrf` — внутренняя оптимизационная деталь `PgVectorStore`, используемая только при `capabilities.supports_hybrid_rrf = True`.
-   - Первичный фильтр `WHERE d.access_level <= user_access_level` исключает недоступные документы; при `enterprise_acl` дополнительно применяется предикат `allowed_document_ids` из `AccessDecision` — **до** `LIMIT`/RRF (не пост-фильтром), чтобы не ломать top-k и ранжирование.
-   - Находятся Top-30 кандидатов по косинусному расстоянию (HNSW) и Top-30 по sparsevec, объединяясь по формуле RRF:
+   - `chit_chat` $\to$ a quick answer from a lightweight LLM without hitting the DB.
+   - `meta_command` $\to$ info about the system state and available sources.
+   - `rag_search` $\to$ handed off to the RAG pipeline.
+5. **Question condensation (Multi-turn)**:
+   - The last $K=5$ dialog messages are retrieved from the `messages` table.
+   - If the question depends on context, a lightweight LLM generates a standalone `standalone_query`.
+6. **Vectorization and Sparse encoding**:
+   - `bge-m3` in a single pass generates the dense vector (1024 float) and the sparse vector (sparse dictionary).
+7. **Hybrid search (`BaseVectorStore` + `Retriever`)**:
+   - The **separate arms of the contract** are called: `BaseVectorStore.search_dense(...)` and `BaseVectorStore.search_sparse(...)`.
+   - Fusion is performed **in the application layer** (`Retriever.fuse_rrf`), not in SQL. The SQL function `hybrid_search_rrf` is an internal optimization detail of `PgVectorStore`, used only when `capabilities.supports_hybrid_rrf = True`.
+   - The primary filter `WHERE d.access_level <= user_access_level` excludes inaccessible documents; with `enterprise_acl` the predicate `allowed_document_ids` from `AccessDecision` is additionally applied — **before** `LIMIT`/RRF (not as a post-filter), so as not to break top-k and ranking.
+   - The Top-30 candidates by cosine distance (HNSW) and the Top-30 by sparsevec are found and combined by the RRF formula:
      $$RRF(d) = \frac{0.6}{60 + r_{dense}(d)} + \frac{0.4}{60 + r_{sparse}(d)}$$
-8. **Реранкинг (FlashRank)**:
-   - Полученные Top-30 чанков переранжируются Cross-Encoder моделью.
-   - **Confidence Gate**: Если $\max(score) < 0.35$, поиск прерывается, пользователю возвращается сообщение об отсутствии информации.
-9. **Small-to-Big Hydration + ре-проверка доступа**:
-   - По `parent_id` отобранных лучших child-чанков (Top 3–5) загружается полный текст соответствующих `parent_chunks`.
-   - **Ре-проверка эффективного доступа (defense-in-depth)**: гидратор и citation-resolver обязаны повторно проверить каждый `parent_chunk`/цитату через `PolicyEvaluator.can_access_document(...)` (используется денормализованный `parent_chunks.access_level` + ACL). Это закрывает прямой доступ к parent-контенту в обход child-фильтра; недоступные цитаты/секции отбрасываются.
-   - Устраняются дубликаты родительских секций.
-10. **Сборка промпта и Выход** (канало-нейтрально):
-   - Формируется защищённый контекст внутри `<untrusted_doc_context>`.
-   - Выход идёт через `BaseChannel.send_response()` / `stream_response()`; способ доставки выбирается **на границе канала** по `ChannelCapabilities` (например, стриминг-троттлинг 0.5–1.0 сек у Telegram, SSE у Web/REST).
-   - Элементы интерфейса (кнопки 👍/👎, markdown, цитаты) рендерятся адаптером только при соответствующих `supports_*`; бизнес-логика поиска по флагам **не ветвится**.
-11. **Трейсинг**: Все спаны, токены и время отправляются в Langfuse.
+8. **Reranking (FlashRank)**:
+   - The resulting Top-30 chunks are reranked by a Cross-Encoder model.
+   - **Confidence Gate**: if $\max(score) < 0.35$, the search is aborted and the user receives a "no information found" message.
+9. **Small-to-Big Hydration + access re-check**:
+   - By the `parent_id` of the selected best child chunks (Top 3-5), the full text of the corresponding `parent_chunks` is loaded.
+   - **Effective-access re-check (defense-in-depth)**: the hydrator and the citation resolver must re-check each `parent_chunk`/citation through `PolicyEvaluator.can_access_document(...)` (using the denormalized `parent_chunks.access_level` + ACL). This closes direct access to parent content bypassing the child filter; inaccessible citations/sections are dropped.
+   - Duplicate parent sections are removed.
+10. **Prompt assembly and Output** (channel-neutral):
+   - A protected context is formed inside `<untrusted_doc_context>`.
+   - Output goes through `BaseChannel.send_response()` / `stream_response()`; the delivery method is chosen **at the channel boundary** by `ChannelCapabilities` (e.g. streaming throttling 0.5-1.0 sec for Telegram, SSE for Web/REST).
+   - UI elements (👍/👎 buttons, markdown, citations) are rendered by the adapter only when the corresponding `supports_*` are set; the search business logic does **not** branch on flags.
+11. **Tracing**: all spans, tokens and timings are sent to Langfuse.
 
 ---
 
-## 3. Архитектура фонового инжеста данных (Ingestion ETL Flow)
+## 3. Background data ingestion architecture (Ingestion ETL Flow)
 
 ```
 [ BaseObjectStorage (per-tenant: S3 / MinIO / R2 / local) / Admin SPA Upload ]
@@ -163,23 +163,23 @@
 │  4. Transactional Upsert (SQLAlchemy + VectorStore):   │
 │     - INSERT documents (tenant_id) -> parent -> child  │
 │     - UPDATE status = 'indexed'                        │
-│  5. NOTIFY ingest_events -> SSE админки (LISTEN)       │
+│  5. NOTIFY ingest_events -> admin SSE (LISTEN)         │
 └────────────────────────────────────────────────────────┘
 ```
 
-Источники файлов унифицированы через порт **`BaseObjectStorage`** (per-tenant префикс `{tenant_id}/`): одна и та же задача `process_document_task(tenant_id, storage_ref, content_hash, access_level)` обслуживает и drag-and-drop загрузку из Admin SPA, и File Watcher локальной папки, и внешние коннекторы.
+File sources are unified through the **`BaseObjectStorage`** port (per-tenant prefix `{tenant_id}/`): the same task `process_document_task(tenant_id, storage_ref, content_hash, access_level)` serves drag-and-drop upload from the Admin SPA, the local-folder File Watcher, and external connectors.
 
 ---
 
-## 4. Контур отказоустойчивости (Resilience Matrix)
+## 4. Fault-tolerance contour (Resilience Matrix)
 
-| Компонент | Возможный сбой | Механизм защиты |
+| Component | Possible failure | Protection mechanism |
 |---|---|---|
-| **Groq Cloud API** | Rate Limit (HTTP 429) / 5xx | Tenacity Retry (3 attempts, backoff 1s..5s) $\to$ Fallback на Gemini Free или локальную Ollama |
-| **Embedder / CPU** | OOM / Высокая нагрузка | Батчинг строго по 32 чанка, ограничение concurrency воркера |
-| **File Watcher** | Частичная запись файла | Debounce 2.5 сек, проверка `st_size` стабильности перед чтением |
-| **Telegram API** | Flood control / Rate limit | Очередь редактирования сообщений с троттлингом (min 0.8s между editMessageText) |
-| **PostgreSQL / pgvector** | Network timeout / Pool exhaustion | Connection Pooling (SQLAlchemy Pool / Supavisor при хостинге в Supabase), timeout 10s |
-| **SSE админки (`/admin/ingest/stream`)** | События воркера не видны при `--workers N` | Postgres `LISTEN/NOTIFY` как общая шина + fallback polling `documents.status`; in-memory pub/sub запрещён |
-| **Публичный Web-виджет** | DDoS / всплеск трафика роняет приватную админку | Раздельные `--app` / воркер-пулы и rate-limit политики, готовность к `docker compose scale widget=N` |
-| **Langfuse** | Недоступен / таймаут | Запись трейсов fire-and-forget с буфером; ответ RAG не блокируется (см. §1.2, [`eval_and_ops.md`](./eval_and_ops.md) §2.5) |
+| **Groq Cloud API** | Rate Limit (HTTP 429) / 5xx | Tenacity Retry (3 attempts, backoff 1s..5s) $\to$ Fallback to Gemini Free or local Ollama |
+| **Embedder / CPU** | OOM / high load | Batching strictly by 32 chunks, limiting worker concurrency |
+| **File Watcher** | Partial file write | Debounce 2.5 sec, checking `st_size` stability before reading |
+| **Telegram API** | Flood control / Rate limit | Message-edit queue with throttling (min 0.8s between editMessageText) |
+| **PostgreSQL / pgvector** | Network timeout / Pool exhaustion | Connection Pooling (SQLAlchemy Pool / Supavisor when hosted on Supabase), timeout 10s |
+| **Admin SSE (`/admin/ingest/stream`)** | Worker events not visible with `--workers N` | Postgres `LISTEN/NOTIFY` as a shared bus + fallback polling of `documents.status`; in-memory pub/sub is forbidden |
+| **Public Web widget** | DDoS / traffic spike takes down the private admin | Separate `--app` / worker pools and rate-limit policies, ready for `docker compose scale widget=N` |
+| **Langfuse** | Unavailable / timeout | Fire-and-forget trace writing with a buffer; the RAG answer is not blocked (see §1.2, [`eval_and_ops.md`](./eval_and_ops.md) §2.5) |
