@@ -54,6 +54,24 @@ BEGIN
 END
 $$;
 
+-- 0.1 Schema/table privileges for `authenticated` (migration 0008_schema_grants).
+-- On Supabase these come from pg_default_acl, but a plain Postgres (self-hosted /
+-- on_premise_box / the pgvector container) has none, so WITHOUT these grants the app_user
+-- retrieval path fails with `permission denied for table ...` BEFORE RLS is reached and the
+-- fail-closed contract (§4) is never even exercisable. Role attributes are also normalized
+-- (ALTER ROLE ... (NO)BYPASSRLS) because CREATE ROLE above is IF NOT EXISTS-only. Idempotent.
+ALTER ROLE service_role BYPASSRLS;
+ALTER ROLE authenticated NOBYPASSRLS;
+ALTER ROLE anon NOBYPASSRLS;
+ALTER ROLE app_user NOBYPASSRLS;
+GRANT USAGE ON SCHEMA public TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO authenticated;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO authenticated;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO authenticated;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+    GRANT USAGE, SELECT ON SEQUENCES TO authenticated;
+
 -- 1. Enabling extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS vector;

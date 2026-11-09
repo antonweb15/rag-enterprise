@@ -25,6 +25,7 @@ _EXPECTED_CHAIN = [
     "0005_hybrid_search_rrf",
     "0006_rls_policies",
     "0007_channel_backfill",
+    "0008_schema_grants",
 ]
 
 # Destructive operations forbidden in upgrade() (storage_schema.md §5 item 4).
@@ -147,6 +148,19 @@ def test_channel_backfill_rewrites_legacy_values() -> None:
     src = (VERSIONS_DIR / "0007_channel_backfill.py").read_text(encoding="utf-8")
     assert "channel = 'rest_sse' WHERE channel = 'fastapi'" in src
     assert "allowed_origins = '[]'::jsonb" in src
+
+
+def test_schema_grants_make_self_hosted_self_contained() -> None:
+    """0008 grants USAGE/table privileges to authenticated + normalizes role attributes (§0/§4)."""
+    src = (VERSIONS_DIR / "0008_schema_grants.py").read_text(encoding="utf-8")
+    assert "GRANT USAGE ON SCHEMA public TO authenticated" in src
+    assert "ON ALL TABLES IN SCHEMA public TO authenticated" in src
+    assert "ALTER DEFAULT PRIVILEGES IN SCHEMA public" in src
+    # Role-attribute normalization (CREATE ROLE in 0001 is IF NOT EXISTS-only); wrapped in a
+    # DO block that tolerates reserved/managed roles (insufficient_privilege on Supabase).
+    assert "BYPASSRLS" in src
+    assert "NOBYPASSRLS" in src
+    assert "insufficient_privilege" in src
 
 
 def test_orm_license_features_default_matches_ddl() -> None:
