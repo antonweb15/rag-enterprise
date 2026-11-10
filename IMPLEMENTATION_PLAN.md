@@ -122,11 +122,14 @@
   `RetrievalCandidate`, `RAGResponse`, `AccessDecision`, `Group`, `Collection`, `DocumentAclEntry`,
   `ChannelEvent`/`ChannelCapabilities`, `BrandingConfig`/`WidgetBranding`/`TelegramBranding`,
   `TraceContext`, `HeartbeatPayload`, `BoxDeployment`, `ObservabilityConfig`, `ImpersonationGrant`,
-  `LicenseIssueRequest`/`LicenseRevokeRequest`, `ActivationCode`, backoffice-модели
-  (`Customer`, `BackofficeUser`, `Order`), а также `Settings` (pydantic-settings).
+  `LicenseIssueRequest`/`LicenseRevokeRequest`, `ActivationCode`, `Customer`,
+  а также `Settings` (pydantic-settings). (Backoffice-модели `BackofficeUser`/`Order` в
+  `modules_spec.md` не определены и в коде не реализуются.)
 - Абстракции: `BaseLicenseValidator`, `BaseLicenseServer`, `BaseTenantResolver`,
-  `BasePolicyEvaluator` (единый PDP), `BaseChannel`, `BaseEmbedder`, `BaseReranker`, `BaseLLM`,
-  `BaseDocumentSource`, `BaseObjectStorage`, `BaseVectorStore`, `BaseTraceSink`.
+  `BasePolicyEvaluator` (единый PDP), `BaseQueryRewriter`, `BaseIntentRouter`, `BaseRetriever`
+  (+ эталонный `Retriever` с RRF-слиянием в application-layer), `BaseConfidenceGate`,
+  `BaseChannel`, `BaseEmbedder`, `BaseReranker`, `BaseLLM`, `BaseDocumentSource`,
+  `BaseObjectStorage`, `BaseVectorStore`, `BaseTraceSink`.
   DI-контейнер связывает абстракции с провайдерами.
 
 **Тестовое покрытие:**

@@ -5,8 +5,10 @@ code; the forms `packages/core`/`core/` are considered deprecated). The package 
 pip-installable (`pip install -e .`) and does not depend on the transport layer
 (`services/api`) or the frontend.
 
-In Stage A only the skeleton is fixed here: Pydantic V2 models and `Base*` interfaces will
-appear in Stage C (`core/modules_spec.md`).
+Stage C adds the core contracts (`core/modules_spec.md`): the Pydantic V2 domain models and
+enumerations, the `Settings` object and the abstract `Base*` interfaces live in the `contracts`
+subpackage; the `di` subpackage provides the DI container that binds the abstractions to
+providers.
 """
 
 from __future__ import annotations

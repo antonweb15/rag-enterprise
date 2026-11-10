@@ -9,13 +9,17 @@ requires-python = ">=3.11,<3.15"
 
 # Stage B introduces the storage layer: SQLAlchemy 2.0 (ORM/Core), Alembic (additive-only
 # migrations, see storage_schema.md §5), psycopg 3 (Postgres driver) and pgvector
-# (vector/sparsevec types for the dense/sparse arms of BGE-M3). The rest of the application
-# stack (ingestion/retrieval/LLM) will appear in later stages.
+# (vector/sparsevec types for the dense/sparse arms of BGE-M3). Stage C adds the core contracts:
+# Pydantic V2 (domain models / Base* interfaces) and pydantic-settings (the Settings object,
+# see modules_spec.md §1). The rest of the application stack (ingestion/retrieval/LLM) will
+# appear in later stages.
 dependencies = [
     "SQLAlchemy>=2.0",
     "alembic>=1.13",
     "psycopg[binary]>=3.1",
     "pgvector>=0.3",
+    "pydantic>=2.5",
+    "pydantic-settings>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -116,6 +120,16 @@ warn_unused_ignores = true
 disallow_untyped_defs = true
 no_implicit_optional = true
 show_error_codes = true
+# Stage C: the pydantic V2 mypy plugin teaches mypy the synthesized model `__init__`
+# (so `Field(None, ...)` is understood as an optional field with a default, not a required arg).
+plugins = ["pydantic.mypy"]
+# DI-by-port is the core architecture (modules_spec.md §2): the container binds ABSTRACT ports
+# (Base* ABCs) to providers, so `type[BaseX]` is passed intentionally to register/resolve. The
+# `type-abstract` check would flag exactly this legitimate pattern. It is disabled GLOBALLY (not
+# only for packages/rag_core/di/) on purpose: the error surfaces at every CALL SITE that passes
+# an abstract port (tests and future composition roots), not inside the container module, so a
+# per-module override scoped to di/ would not actually suppress it.
+disable_error_code = ["type-abstract"]
 # The core, the transport layer and the tests are typed (cf. core/eval_and_ops.md §4 -
 # the target `mypy services/ packages/`).
 files = ["tests", "packages", "services"]
