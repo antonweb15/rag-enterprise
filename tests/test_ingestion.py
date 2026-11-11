@@ -172,8 +172,8 @@ class _FakeDoclingDocument:
 
 
 def test_parser_decodes_plain_text_natively() -> None:
-    parsed = DocumentParser().parse("notes.md", "hello мир".encode())
-    assert parsed.text == "hello мир"
+    parsed = DocumentParser().parse("notes.md", "hello wörld café".encode())
+    assert parsed.text == "hello wörld café"
     assert parsed.metadata["parser"] == "plain_text"
 
 
