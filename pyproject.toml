@@ -23,6 +23,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Stage D (Ingestion Pipeline & Embedder, core/architecture.md §3). These heavy runtime
+# dependencies power the concrete providers (Docling parser, BGE-M3 embedder, S3 storage, the
+# Taskiq Postgres queue). They are imported LAZILY in rag_core.ingestion, so the core package and
+# its unit tests work without them installed; install this extra to run a real ingest worker.
+ingestion = [
+    "docling>=2.0",
+    "FlagEmbedding>=1.2",
+    "taskiq-pg>=0.1",
+    "boto3>=1.34",
+]
 dev = [
     "ruff>=0.6",
     "mypy>=1.11",
@@ -133,6 +143,20 @@ disable_error_code = ["type-abstract"]
 # The core, the transport layer and the tests are typed (cf. core/eval_and_ops.md §4 -
 # the target `mypy services/ packages/`).
 files = ["tests", "packages", "services"]
+
+# Stage D (core/architecture.md §3): the ingestion providers depend on heavy, optional runtime
+# libraries (Docling, FlagEmbedding, boto3, taskiq-pg) that are imported LAZILY and ship no type
+# stubs. They are declared in the optional `ingestion` extra and are absent in the lint/type/test
+# environment, so we silence "missing import" for exactly these modules (the lazy import sites are
+# unreachable without the extra installed).
+[[tool.mypy.overrides]]
+module = [
+    "docling.*",
+    "FlagEmbedding.*",
+    "boto3.*",
+    "taskiq_pg.*",
+]
+ignore_missing_imports = true
 
 # ----------------------------------------------------------------------------
 # Pytest

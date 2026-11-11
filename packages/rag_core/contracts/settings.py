@@ -61,6 +61,25 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     embedding_batch_size: int = 32
+    # The ACTIVE embedding version stamped on every newly-ingested chunk. Bumping it is the atomic
+    # re-embedding switch (core/architecture.md §3 / IMPLEMENTATION_PLAN.md Stage D): new ingests
+    # write this version, and `ReembeddingService.reembed_corpus` backfills the corpus to it in
+    # batches while old rows stay queryable; the retrieval layer (Stage E) filters by the active
+    # version, so flipping this single value cuts over without mixed dimensions or search downtime.
+    embedding_version: int = 1
+
+    # Ingestion: token-aware Parent-Child splitter bounds (core/architecture.md §3) and the
+    # durable-queue resilience policy (core/architecture.md §4). Single source of these values -
+    # the pipeline/splitter/retry read them from here instead of hardcoding constants.
+    chunk_parent_min_tokens: int = 800
+    chunk_parent_max_tokens: int = 1200
+    chunk_child_min_tokens: int = 150
+    chunk_child_max_tokens: int = 250
+    chunk_child_overlap_tokens: int = 30
+    ingest_max_retries: int = 3
+    ingest_retry_base_delay: float = 1.0
+    ingest_retry_max_delay: float = 5.0
+    file_watcher_debounce_seconds: float = 2.5
 
     # RAG Parameters
     retrieval_top_candidates: int = 30
