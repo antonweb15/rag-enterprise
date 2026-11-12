@@ -31,6 +31,7 @@ from rag_core.contracts import (
     BaseLicenseValidator,
     BaseLLM,
     BaseObjectStorage,
+    BaseParentRepository,
     BasePolicyEvaluator,
     BaseQueryRewriter,
     BaseReranker,
@@ -181,6 +182,7 @@ def test_settings_ignores_surplus_env_var(monkeypatch: pytest.MonkeyPatch) -> No
         BaseLicenseServer,
         BaseTenantResolver,
         BasePolicyEvaluator,
+        BaseParentRepository,
         BaseVectorStore,
         BaseObjectStorage,
         BaseEmbedder,
@@ -244,6 +246,7 @@ class _FakeVectorStore(BaseVectorStore):
         k: int = 30,
         user_access_level: int = 0,
         allowed_document_ids: list[UUID] | None = None,
+        denied_document_ids: list[UUID] | None = None,
     ) -> list[RetrievalCandidate]:
         return self._dense
 
@@ -254,6 +257,7 @@ class _FakeVectorStore(BaseVectorStore):
         k: int = 30,
         user_access_level: int = 0,
         allowed_document_ids: list[UUID] | None = None,
+        denied_document_ids: list[UUID] | None = None,
     ) -> list[RetrievalCandidate]:
         return self._sparse
 
@@ -393,6 +397,7 @@ class _DenseOnlyVectorStore(_FakeVectorStore):
         k: int = 30,
         user_access_level: int = 0,
         allowed_document_ids: list[UUID] | None = None,
+        denied_document_ids: list[UUID] | None = None,
     ) -> list[RetrievalCandidate]:
         raise AssertionError("search_sparse must not be called when supports_sparse=False")
 

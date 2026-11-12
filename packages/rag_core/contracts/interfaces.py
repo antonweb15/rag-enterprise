@@ -27,6 +27,7 @@ from rag_core.contracts.models import (
     LicenseIssueRequest,
     LicensePayload,
     LicenseRevokeRequest,
+    ParentChunk,
     RAGResponse,
     RawDocument,
     RetrievalCandidate,
@@ -117,6 +118,18 @@ class BasePolicyEvaluator(ABC):
         """A point-check (used for citation re-check/parent hydration). fail-closed."""
 
 
+class BaseParentRepository(ABC):
+    """The parent-hydration persistence port (tenant-scoped, read-only).
+
+    Centralized here with the other `Base*` ports; the concrete SQLAlchemy implementation lives in
+    `rag_core.retrieval.repository` and is consumed by the Small-to-Big hydrator.
+    """
+
+    @abstractmethod
+    async def fetch_parents(self, tenant_id: UUID, parent_ids: list[UUID]) -> list[ParentChunk]:
+        """Loads the parent chunks for the given ids (tenant-scoped). Order is not guaranteed."""
+
+
 # --- 2.0.1. Storage Ports (swappable implementations) ---
 
 
@@ -155,11 +168,15 @@ class BaseVectorStore(ABC):
         k: int = 30,
         user_access_level: int = 0,
         allowed_document_ids: list[UUID] | None = None,
+        denied_document_ids: list[UUID] | None = None,
     ) -> list[RetrievalCandidate]:
         """The dense arm: Top-k by cosine distance with a tenant_id and access_level filter.
 
-        With enterprise_acl, allowed_document_ids (from AccessDecision) is applied as an extra
-        predicate BEFORE LIMIT k - not as a post-filter, so as not to break top-k/RRF.
+        The access predicate matches the PDP (AccessDecision): a chunk is visible when
+        ``access_level <= user_access_level`` **OR** its document is in ``allowed_document_ids``
+        (an explicit ACL grant can raise visibility above the clearance level). Anything in
+        ``denied_document_ids`` is excluded regardless (denials win). All predicates are applied
+        BEFORE LIMIT k - never as a post-filter, so as not to break top-k/RRF.
         """
 
     @abstractmethod
@@ -170,10 +187,12 @@ class BaseVectorStore(ABC):
         k: int = 30,
         user_access_level: int = 0,
         allowed_document_ids: list[UUID] | None = None,
+        denied_document_ids: list[UUID] | None = None,
     ) -> list[RetrievalCandidate]:
         """The lexical arm (sparsevec / BM25). If supports_sparse=False - returns an empty list.
 
-        allowed_document_ids is applied the same way as in search_dense (a predicate before LIMIT).
+        allowed_document_ids/denied_document_ids are applied the same way as in search_dense
+        (OR-combined with the level filter / excluded; a predicate before LIMIT).
         """
 
     @abstractmethod
@@ -243,14 +262,16 @@ class BaseRetriever(ABC):
         query: str,
         tenant_id: UUID,
         user_access_level: int = 0,
-        top_k: int = 30,
+        top_k: int | None = None,
         allowed_document_ids: list[UUID] | None = None,
+        denied_document_ids: list[UUID] | None = None,
     ) -> list[RetrievalCandidate]:
         """Hybrid Dense + Sparse search with RRF fusion and isolation by tenant_id.
 
-        user_access_level and allowed_document_ids are taken from AccessDecision (PolicyEvaluator),
-        computed on the backend; the client does not pass them. user_access_level is `int` (the raw
-        Postgres GUC value); see BaseVectorStore for the int-vs-AccessLevel rationale.
+        user_access_level/allowed_document_ids/denied_document_ids are taken from AccessDecision
+        (PolicyEvaluator), computed on the backend; the client does not pass them. user_access_level
+        is `int` (the raw Postgres GUC value); see BaseVectorStore for the int-vs-AccessLevel
+        rationale. `top_k=None` defers to `Settings.retrieval_top_candidates`.
         """
 
 
@@ -284,6 +305,7 @@ class Retriever(BaseRetriever):
         user_access_level: int = 0,
         top_k: int | None = None,
         allowed_document_ids: list[UUID] | None = None,
+        denied_document_ids: list[UUID] | None = None,
     ) -> list[RetrievalCandidate]:
         # None => use the canonical default from Settings (retrieval_top_candidates).
         effective_top_k = self._settings.retrieval_top_candidates if top_k is None else top_k
@@ -294,6 +316,7 @@ class Retriever(BaseRetriever):
             k=effective_top_k,
             user_access_level=user_access_level,
             allowed_document_ids=allowed_document_ids,
+            denied_document_ids=denied_document_ids,
         )
         sparse: list[RetrievalCandidate] = []
         if self._vector_store.capabilities.supports_sparse:
@@ -303,14 +326,18 @@ class Retriever(BaseRetriever):
                 k=effective_top_k,
                 user_access_level=user_access_level,
                 allowed_document_ids=allowed_document_ids,
+                denied_document_ids=denied_document_ids,
             )
-        return self.fuse_rrf(
+        fused = self.fuse_rrf(
             dense,
             sparse,
             k=self._settings.rrf_k,
             alpha=self._settings.rrf_alpha,
             beta=self._settings.rrf_beta,
         )
+        # Cap the fused list to Top-N (architecture.md §2 p.8: "the resulting Top-30 chunks are
+        # reranked"): each arm yields up to effective_top_k, so the union can be up to 2x that.
+        return fused[:effective_top_k]
 
     @staticmethod
     def fuse_rrf(

@@ -33,6 +33,13 @@ ingestion = [
     "taskiq-pg>=0.1",
     "boto3>=1.34",
 ]
+# Stage E (Retrieval, Reranker & Confidence Gate, core/architecture.md §2 p.7-9). The FlashRank
+# cross-encoder reranker is imported LAZILY in rag_core.retrieval.reranker, so the core package and
+# its unit tests work without it installed (tests inject a lightweight rank_fn); install this extra
+# to run the real reranker.
+retrieval = [
+    "flashrank>=0.2",
+]
 dev = [
     "ruff>=0.6",
     "mypy>=1.11",
@@ -155,6 +162,7 @@ module = [
     "FlagEmbedding.*",
     "boto3.*",
     "taskiq_pg.*",
+    "flashrank.*",
 ]
 ignore_missing_imports = true
 
