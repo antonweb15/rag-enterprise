@@ -34,7 +34,8 @@ _META_COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 _CHIT_CHAT_RE = re.compile(
-    r"^(?:hello|hi|hey|greetings|good (?:morning|afternoon|evening)|thanks|thank you|goodbye|bye)[!.]*$",
+    r"^(?:hello|hi|hey|greetings|good (?:morning|afternoon|evening)|"
+    r"thanks|thank you|goodbye|bye)[!.]*$",
     re.IGNORECASE,
 )
 
