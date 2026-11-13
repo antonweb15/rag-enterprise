@@ -16,13 +16,16 @@ from the authenticated context (middleware/DI), NEVER from the client request bo
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
 from sqlalchemy import event, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session, SessionTransaction
+
+# Canonical session factory type alias used across ingestion, retrieval and generation
+SessionFactory = Callable[[], Session]
 
 # Canonical GUC names (match the RLS policies in storage_schema.md §4.1).
 TENANT_GUC = "app.current_tenant_id"

@@ -87,9 +87,11 @@ class Settings(BaseSettings):
     rrf_alpha: float = 0.6
     rrf_beta: float = 0.4
     confidence_threshold: float = 0.35
+    # number of dialog turns (K) to retain in condensation context (1 turn = 2 messages)
     max_history_turns: int = 5
     generation_temperature: float = 0.1  # determinism/factuality of RAG; recommended <= 0.3
     generation_max_tokens: int = 1024  # the LLM answer token limit
+    generation_max_context_tokens: int = 4000  # maximum token budget for retrieved context chunks
 
     # Channels (see core/channels.md)
     telegram_bot_token: str | None = None  # by default ONE shared bot; a separate bot - paid

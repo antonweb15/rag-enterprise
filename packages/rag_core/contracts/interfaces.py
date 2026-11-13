@@ -12,12 +12,14 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
-from typing import Any, Literal
+from contextlib import AbstractAsyncContextManager
+from datetime import datetime
+from typing import Any, Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel
 
-from rag_core.contracts.enums import IntentType, LicensePlan
+from rag_core.contracts.enums import ChannelType, IntentType, LicensePlan
 from rag_core.contracts.models import (
     AccessDecision,
     ActivationCode,
@@ -252,6 +254,32 @@ class BaseIntentRouter(ABC):
         """Intent routing: RAG search, Chit-Chat or Meta command."""
 
 
+class BaseSessionManager(ABC):
+    """Abstract port for managing multi-turn session history."""
+
+    @abstractmethod
+    async def get_history(
+        self, tenant_id: UUID, conversation_id: UUID | str, limit: int = 5
+    ) -> list[dict[str, str]]:
+        """Retrieves the last ``limit`` dialog messages as [{"role": "...", "content": "..."}]."""
+
+    @abstractmethod
+    async def add_message(
+        self,
+        tenant_id: UUID,
+        conversation_id: UUID | str,
+        role: str,
+        content: str,
+        *,
+        user_id: str | None = None,
+        channel: str | None = None,
+        trace_id: str | None = None,
+        feedback: int | None = None,
+        feedback_comment: str | None = None,
+    ) -> None:
+        """Appends a message to the conversation."""
+
+
 # --- 2.3. Retriever & Reranker Interface ---
 
 
@@ -434,6 +462,8 @@ class BaseLLM(ABC):
         When temperature/max_tokens=None, settings.generation_temperature and
         settings.generation_max_tokens are used.
         """
+        if False:
+            yield ""
 
 
 # --- 2.5. Document Source Interface ---
@@ -447,6 +477,8 @@ class BaseDocumentSource(ABC):
     @abstractmethod
     async def watch_for_changes(self) -> AsyncGenerator[RawDocument, None]:
         """A generator of file add/change events with debounce."""
+        if False:
+            yield RawDocument(tenant_id=UUID(int=0), source_uri="", content_hash="")
 
 
 # --- 2.6. Channel Interface (see core/channels.md) ---
@@ -475,6 +507,14 @@ class BaseChannel(ABC):
     @abstractmethod
     async def receive(self) -> AsyncGenerator[ChannelEvent, None]:
         """A generator of normalized incoming channel events (ChannelEvent)."""
+        if False:
+            yield ChannelEvent(
+                user_id=UUID(int=0),
+                tenant_id=UUID(int=0),
+                channel=ChannelType.CLI,
+                channel_user_id="",
+                created_at=datetime.now(),
+            )
 
     @abstractmethod
     async def send_response(self, user_id: str, response: RAGResponse) -> None:
@@ -499,6 +539,24 @@ class BaseChannel(ABC):
 
 
 # --- 2.5. Observability (Tracing Sink) ---
+
+
+class TraceSpanWriter(Protocol):
+    """The minimal span-emitting surface the retrieval layer depends on.
+
+    :class:`rag_core.tracing.TraceManager` satisfies this protocol; declaring the dependency as a
+    protocol (instead of the concrete class) keeps the retrieval layer decoupled from the tracing
+    package and makes the contract testable with fakes.
+    """
+
+    def span(
+        self,
+        trace_id: str,
+        name: str,
+        *,
+        input: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> AbstractAsyncContextManager[dict[str, Any]]: ...
 
 
 class BaseTraceSink(ABC):

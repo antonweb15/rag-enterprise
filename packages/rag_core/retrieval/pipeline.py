@@ -30,13 +30,14 @@ from rag_core.contracts.interfaces import (
     BaseRetriever,
     BaseVectorStore,
     Retriever,
+    TraceSpanWriter,
 )
 from rag_core.contracts.models import ParentChunk, RetrievalCandidate, UserContext
 from rag_core.contracts.settings import Settings
+from rag_core.db.session import SessionFactory
 from rag_core.retrieval.confidence_gate import ConfidenceGate
 from rag_core.retrieval.hydration import SmallToBigHydrator
 from rag_core.retrieval.repository import (
-    SessionFactory,
     SqlAlchemyParentRepository,
     SqlAlchemyPolicyEvaluator,
 )
@@ -77,7 +78,23 @@ class SearchPipeline:
         self._gate = confidence_gate
         self._hydrator = hydrator
 
-    async def search(self, user: UserContext, query: str) -> SearchResult:
+    @property
+    def policy_evaluator(self) -> BasePolicyEvaluator:
+        """The Policy Decision Point bound into this pipeline.
+
+        Exposed so the downstream generation layer can re-check citations through the same PDP
+        (``core/architecture.md`` §2 p.9) without reaching into a private field.
+        """
+        return self._policy
+
+    async def search(
+        self,
+        user: UserContext,
+        query: str,
+        *,
+        trace_id: str | None = None,
+        trace_manager: TraceSpanWriter | None = None,
+    ) -> SearchResult:
         """Runs PDP -> retrieve -> rerank -> confidence gate -> hydrate for a single query.
 
         ``user_access_level``/``allowed_document_ids``/``denied_document_ids`` are taken from the
@@ -86,14 +103,40 @@ class SearchPipeline:
         LLM for a low-confidence query).
         """
         access = await self._policy.effective_access(user)
-        candidates = await self._retriever.retrieve(
-            query,
-            user.tenant_id,
-            user_access_level=int(access.effective_access_level),
-            allowed_document_ids=access.allowed_document_ids,
-            denied_document_ids=access.denied_document_ids,
-        )
-        reranked = await self._reranker.rerank(query, candidates)
+
+        if trace_manager is not None and trace_id is not None:
+            async with trace_manager.span(
+                trace_id,
+                "hybrid_retrieval",
+                input={"query": query, "user_id": str(user.user_id)},
+            ) as span_out:
+                candidates = await self._retriever.retrieve(
+                    query,
+                    user.tenant_id,
+                    user_access_level=int(access.effective_access_level),
+                    allowed_document_ids=access.allowed_document_ids,
+                    denied_document_ids=access.denied_document_ids,
+                )
+                span_out["candidate_count"] = len(candidates)
+
+            async with trace_manager.span(
+                trace_id,
+                "reranking",
+                input={"query": query, "candidate_count": len(candidates)},
+            ) as span_out:
+                reranked = await self._reranker.rerank(query, candidates)
+                span_out["reranked_count"] = len(reranked)
+                span_out["max_score"] = max((c.rerank_score or 0.0 for c in reranked), default=0.0)
+        else:
+            candidates = await self._retriever.retrieve(
+                query,
+                user.tenant_id,
+                user_access_level=int(access.effective_access_level),
+                allowed_document_ids=access.allowed_document_ids,
+                denied_document_ids=access.denied_document_ids,
+            )
+            reranked = await self._reranker.rerank(query, candidates)
+
         if not self._gate.evaluate(reranked):
             return SearchResult(candidates=reranked, is_confident=False)
         parents = await self._hydrator.hydrate(user, reranked)

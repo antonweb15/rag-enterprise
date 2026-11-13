@@ -47,10 +47,12 @@ from rag_core.contracts.interfaces import (
     BaseQueryRewriter,
     BaseReranker,
     BaseRetriever,
+    BaseSessionManager,
     BaseTenantResolver,
     BaseTraceSink,
     BaseVectorStore,
     Retriever,
+    TraceSpanWriter,
     VectorStoreCapabilities,
 )
 from rag_core.contracts.models import (
@@ -178,9 +180,11 @@ __all__ = [
     "BaseQueryRewriter",
     "BaseReranker",
     "BaseRetriever",
+    "BaseSessionManager",
     "BaseTenantResolver",
     "BaseTraceSink",
     "BaseVectorStore",
     "Retriever",
+    "TraceSpanWriter",
     "VectorStoreCapabilities",
 ]
