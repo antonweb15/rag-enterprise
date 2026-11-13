@@ -89,9 +89,9 @@ async def test_intent_router_golden_examples() -> None:
     # 1. Deterministic fast heuristics
     assert await router.route_intent("/help") == IntentType.META_COMMAND
     assert await router.route_intent("/start") == IntentType.META_COMMAND
-    assert await router.route_intent("какие документы загружены") == IntentType.META_COMMAND
-    assert await router.route_intent("привет!") == IntentType.CHIT_CHAT
-    assert await router.route_intent("спасибо большое") == IntentType.CHIT_CHAT
+    assert await router.route_intent("what can you do?") == IntentType.META_COMMAND
+    assert await router.route_intent("help") == IntentType.META_COMMAND
+    assert await router.route_intent("thank you") == IntentType.CHIT_CHAT
     assert await router.route_intent("hello") == IntentType.CHIT_CHAT
 
     # 2. LLM classification
@@ -625,20 +625,20 @@ async def test_generation_pipeline_non_rag_intents() -> None:
 
     llm = MockLLM(
         responses_by_prompt_fragment={
-            "привет": "Здравствуйте! Чем могу помочь?",
-            "/help": "Я корпоративный ассистент RAG.",
+            "hello": "Hello! How can I help you today?",
+            "/help": "I am the corporate RAG assistant.",
         }
     )
     pipeline = build_generation_pipeline(search_pipeline=search_pipeline, llm=llm)
 
     # 1. Chit-chat
-    res_chat = await pipeline.generate_response(user, "привет")
-    assert "Здравствуйте" in res_chat.answer
+    res_chat = await pipeline.generate_response(user, "hello")
+    assert "Hello" in res_chat.answer
     assert res_chat.confidence_passed is True
 
     # 2. Meta command
     res_meta = await pipeline.generate_response(user, "/help")
-    assert "корпоративный ассистент" in res_meta.answer
+    assert "corporate RAG assistant" in res_meta.answer
     assert res_meta.confidence_passed is True
 
 
@@ -666,7 +666,10 @@ async def test_generation_pipeline_low_confidence_fallback() -> None:
 
     resp = await pipeline.generate_response(user, "Unknown query about aliens")
     assert resp.confidence_passed is False
-    assert "Предоставленные корпоративные документы не содержат информации" in resp.answer
+    assert (
+        "The provided corporate documents do not contain information" in resp.answer
+        or "do not contain information" in resp.answer
+    )
     assert resp.citations == []
 
 

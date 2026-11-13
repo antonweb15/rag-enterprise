@@ -30,14 +30,11 @@ USER MESSAGE:
 
 # Deterministic fast-path regex patterns
 _META_COMMAND_RE = re.compile(
-    r"^(?:/[a-zA-Z0-9_\-]+|какие документы(?: загружены)?|"
-    r"что ты умеешь\??|список источников|what can you do\??|help|list sources)$",
+    r"^(?:/[a-zA-Z0-9_\-]+|what can you do\??|help|list sources|which documents are loaded\??)$",
     re.IGNORECASE,
 )
 _CHIT_CHAT_RE = re.compile(
-    r"^(?:привет|здравствуй(?:те)?|добрый (?:день|вечер|утро)|"
-    r"спасибо(?: большое)?|благодарю|пока|до свидания|"
-    r"hello|hi|hey|thanks|thank you|goodbye|bye)[!.]*$",
+    r"^(?:hello|hi|hey|greetings|good (?:morning|afternoon|evening)|thanks|thank you|goodbye|bye)[!.]*$",
     re.IGNORECASE,
 )
 

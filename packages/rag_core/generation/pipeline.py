@@ -33,13 +33,13 @@ from rag_core.retrieval.pipeline import SearchPipeline
 from rag_core.tracing.sink import NoOpTraceSink, TraceManager
 
 NO_INFO_FALLBACK_ANSWER = (
-    "Предоставленные корпоративные документы не содержат информации для ответа на этот вопрос."
+    "The provided corporate documents do not contain information to answer this question."
 )
 
 CHIT_CHAT_SYSTEM_PROMPT = (
     "You are the Enterprise RAG corporate AI assistant. "
     "Respond to the user's greeting, small talk, or polite phrase concisely, "
-    "professionally, and politely in Russian."
+    "professionally, and politely."
 )
 
 META_COMMAND_SYSTEM_PROMPT = (
