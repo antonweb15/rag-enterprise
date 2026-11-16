@@ -40,6 +40,15 @@ ingestion = [
 retrieval = [
     "flashrank>=0.2",
 ]
+# Stage G (Delivery Channels, core/channels.md). Optional transport libraries for Telegram bot
+# (aiogram 3.x) and air-gapped CLI runner (typer).
+channels = [
+    "aiogram>=3.17.0",
+    "typer>=0.12.0",
+]
+telegram = [
+    "aiogram>=3.17.0",
+]
 dev = [
     "ruff>=0.6",
     "mypy>=1.11",
@@ -70,6 +79,9 @@ build-backend = "setuptools.build_meta"
 # Only the `rag_core` core from packages/ is installed (see [tool.setuptools.packages.find]).
 # The transport layer `services/` is not packaged into the wheel in Stage A (it runs from the
 # repo root via pythonpath, cf. the docker commands `uvicorn services.api.*` in eval_and_ops.md §3.2).
+[project.scripts]
+rag-cli = "services.cli:main"
+
 [tool.setuptools]
 py-modules = []
 
@@ -163,6 +175,7 @@ module = [
     "boto3.*",
     "taskiq_pg.*",
     "flashrank.*",
+    "aiogram.*",
 ]
 ignore_missing_imports = true
 

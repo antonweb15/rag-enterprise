@@ -26,6 +26,7 @@ from rag_core.contracts.models import (
     ChannelCapabilities,
     ChannelEvent,
     ChildChunk,
+    GenerationCitation,
     LicenseIssueRequest,
     LicensePayload,
     LicenseRevokeRequest,
@@ -526,6 +527,9 @@ class BaseChannel(ABC):
         user_id: str,
         token_stream: AsyncGenerator[str, None],
         initial_message_id: str | None = None,
+        citations: list[GenerationCitation] | None = None,
+        confidence_passed: bool = True,
+        trace_id: str | None = None,
     ) -> RAGResponse:
         """Streaming response delivery with throttling and assembly of the final RAGResponse."""
 
