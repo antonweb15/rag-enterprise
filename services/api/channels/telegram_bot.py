@@ -136,11 +136,27 @@ class TelegramBotRunner:
         if callback_data.startswith("feedback:thumb_up:"):
             trace_id = callback_data.split(":")[-1]
             logger.info("Recorded positive feedback for trace %s", trace_id)
+            if self.pipeline is not None and trace_id:
+                updated = await self.pipeline.session_manager.update_feedback(
+                    trace_id=trace_id, feedback=1, tenant_id=self.tenant_id
+                )
+                if updated:
+                    await self.pipeline.trace_manager.log_score(
+                        trace_id, name="user_feedback", value=1.0
+                    )
             return "Thank you for your feedback! 👍"
 
         if callback_data.startswith("feedback:thumb_down:"):
             trace_id = callback_data.split(":")[-1]
             logger.info("Recorded negative feedback for trace %s", trace_id)
+            if self.pipeline is not None and trace_id:
+                updated = await self.pipeline.session_manager.update_feedback(
+                    trace_id=trace_id, feedback=-1, tenant_id=self.tenant_id
+                )
+                if updated:
+                    await self.pipeline.trace_manager.log_score(
+                        trace_id, name="user_feedback", value=-1.0
+                    )
             return "Thank you for your feedback! 👎 We will improve."
 
         return "Feedback received."

@@ -66,6 +66,35 @@ class InMemorySessionManager(BaseSessionManager):
             }
         )
 
+    async def update_feedback(
+        self,
+        trace_id: str,
+        feedback: int,
+        feedback_comment: str | None = None,
+        *,
+        tenant_id: UUID | None = None,
+    ) -> bool:
+        found = False
+        for (t_id, _), messages in self._store.items():
+            if tenant_id is not None and t_id != tenant_id:
+                continue
+            for msg in reversed(messages):
+                if msg.get("trace_id") == trace_id and msg.get("role") == "assistant":
+                    msg["feedback"] = feedback
+                    if feedback_comment is not None:
+                        msg["feedback_comment"] = feedback_comment
+                    found = True
+                    break
+            if not found:
+                for msg in reversed(messages):
+                    if msg.get("trace_id") == trace_id:
+                        msg["feedback"] = feedback
+                        if feedback_comment is not None:
+                            msg["feedback_comment"] = feedback_comment
+                        found = True
+                        break
+        return found
+
 
 class SqlAlchemySessionManager(BaseSessionManager):
     """SQLAlchemy-backed session manager operating on `conversations` and `messages` tables."""
@@ -106,6 +135,23 @@ class SqlAlchemySessionManager(BaseSessionManager):
                 trace_id=trace_id,
                 feedback=feedback,
                 feedback_comment=feedback_comment,
+            )
+
+    async def update_feedback(
+        self,
+        trace_id: str,
+        feedback: int,
+        feedback_comment: str | None = None,
+        *,
+        tenant_id: UUID | None = None,
+    ) -> bool:
+        with self._session_factory() as session:
+            return self._update_feedback_sync(
+                session,
+                trace_id,
+                feedback,
+                feedback_comment=feedback_comment,
+                tenant_id=tenant_id,
             )
 
     @staticmethod
@@ -181,3 +227,41 @@ class SqlAlchemySessionManager(BaseSessionManager):
         )
         session.add(msg)
         session.commit()
+
+    def _update_feedback_sync(
+        self,
+        session: Session,
+        trace_id: str,
+        feedback: int,
+        *,
+        feedback_comment: str | None = None,
+        tenant_id: UUID | None = None,
+    ) -> bool:
+        stmt = (
+            select(models.Message)
+            .join(models.Conversation, models.Message.conversation_id == models.Conversation.id)
+            .where(models.Message.langfuse_trace_id == trace_id)
+            .where(models.Message.role == "assistant")
+        )
+        if tenant_id is not None:
+            stmt = stmt.where(models.Conversation.tenant_id == tenant_id)
+
+        msg = session.scalars(stmt).first()
+        if msg is None:
+            # Fallback to any message with trace_id
+            stmt = (
+                select(models.Message)
+                .join(models.Conversation, models.Message.conversation_id == models.Conversation.id)
+                .where(models.Message.langfuse_trace_id == trace_id)
+            )
+            if tenant_id is not None:
+                stmt = stmt.where(models.Conversation.tenant_id == tenant_id)
+            msg = session.scalars(stmt).first()
+            if msg is None:
+                return False
+
+        msg.feedback = feedback
+        if feedback_comment is not None:
+            msg.feedback_comment = feedback_comment
+        session.commit()
+        return True

@@ -74,6 +74,21 @@ class GenerationPipeline:
         self._citation_resolver = citation_resolver or CitationResolver()
         self._settings = settings or Settings()
 
+    @property
+    def trace_manager(self) -> TraceManager:
+        """Returns the TraceManager instance bound to the pipeline."""
+        return self._trace_mgr
+
+    @property
+    def trace_sink(self) -> BaseTraceSink:
+        """Returns the underlying BaseTraceSink instance."""
+        return self._trace_mgr.sink
+
+    @property
+    def session_manager(self) -> BaseSessionManager:
+        """Returns the session manager instance bound to the pipeline."""
+        return self._session_mgr
+
     async def generate_response(
         self,
         user: UserContext,
@@ -117,16 +132,20 @@ class GenerationPipeline:
         if intent == IntentType.META_COMMAND:
             return await self._handle_meta_command(user, query, conv_id, trace_id)
 
-        # 4. RAG Search path: Query condensation
-        standalone_query = query
-        if history:
-            async with self._trace_mgr.span(
-                trace_id,
-                "query_condensation",
-                input={"raw_query": query, "history_len": len(history)},
-            ) as span_out:
+        # 4. RAG Search path: Query condensation (always emitted for canonical 5-span tree)
+        async with self._trace_mgr.span(
+            trace_id,
+            "query_condensation",
+            input={"raw_query": query, "history_len": len(history)},
+        ) as span_out:
+            if history:
                 standalone_query = await self._condenser.rewrite_query(query, history)
                 span_out["standalone_query"] = standalone_query
+                span_out["was_condensed"] = standalone_query != query
+            else:
+                standalone_query = query
+                span_out["standalone_query"] = standalone_query
+                span_out["was_condensed"] = False
 
         # 5. Hybrid search + Reranking (emits hybrid_retrieval and reranking spans)
         search_res = await self._search.search(
@@ -170,6 +189,7 @@ class GenerationPipeline:
                 max_tokens=self._settings.generation_max_tokens,
             )
             span_out["answer_length"] = len(raw_answer)
+            span_out["model_id"] = getattr(self._llm, "model_id", "default_model")
 
         # 9. Citation resolution with PDP recheck
         citations = await self._citation_resolver.resolve_citations(
@@ -275,13 +295,21 @@ def build_generation_pipeline(
     trace_sink: BaseTraceSink | None = None,
     settings: Settings | None = None,
 ) -> GenerationPipeline:
-    """Composition root for Stage F generation pipeline."""
+    """Composition root for Stage F/H generation pipeline."""
     resolved_settings = settings or Settings()
     effective_llm = llm or FallbackLLMRunner(settings=resolved_settings)
     intent_router = IntentRouter(effective_llm, resolved_settings)
     query_condenser = QueryCondenser(effective_llm, resolved_settings)
     effective_session_mgr = session_manager or InMemorySessionManager()
-    effective_trace_sink = trace_sink or NoOpTraceSink()
+
+    if trace_sink is not None:
+        effective_trace_sink: BaseTraceSink = trace_sink
+    elif resolved_settings.langfuse_public_key and resolved_settings.langfuse_secret_key:
+        from rag_core.tracing.langfuse import LangfuseTraceSink
+
+        effective_trace_sink = LangfuseTraceSink(resolved_settings)
+    else:
+        effective_trace_sink = NoOpTraceSink()
 
     return GenerationPipeline(
         search_pipeline=search_pipeline,

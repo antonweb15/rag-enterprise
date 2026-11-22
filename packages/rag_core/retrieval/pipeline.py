@@ -118,6 +118,8 @@ class SearchPipeline:
                     denied_document_ids=access.denied_document_ids,
                 )
                 span_out["candidate_count"] = len(candidates)
+                span_out["chunk_ids"] = [str(c.child_id) for c in candidates]
+                span_out["scores"] = [float(c.rrf_score) for c in candidates]
 
             async with trace_manager.span(
                 trace_id,
@@ -125,8 +127,11 @@ class SearchPipeline:
                 input={"query": query, "candidate_count": len(candidates)},
             ) as span_out:
                 reranked = await self._reranker.rerank(query, candidates)
+                gate_passed = self._gate.evaluate(reranked)
                 span_out["reranked_count"] = len(reranked)
+                span_out["flashrank_scores"] = [float(c.rerank_score or 0.0) for c in reranked]
                 span_out["max_score"] = max((c.rerank_score or 0.0 for c in reranked), default=0.0)
+                span_out["confidence_gate_passed"] = gate_passed
         else:
             candidates = await self._retriever.retrieve(
                 query,
@@ -136,8 +141,9 @@ class SearchPipeline:
                 denied_document_ids=access.denied_document_ids,
             )
             reranked = await self._reranker.rerank(query, candidates)
+            gate_passed = self._gate.evaluate(reranked)
 
-        if not self._gate.evaluate(reranked):
+        if not gate_passed:
             return SearchResult(candidates=reranked, is_confident=False)
         parents = await self._hydrator.hydrate(user, reranked)
         return SearchResult(candidates=reranked, is_confident=True, parents=parents)

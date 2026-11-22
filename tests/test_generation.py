@@ -765,6 +765,28 @@ async def test_sqlalchemy_session_manager(tmp_path: Path) -> None:
         assert msgs[1].feedback_comment == "Great answer"
         assert msgs[1].langfuse_trace_id == "tr_123"
 
+    # Test update_feedback by trace_id with tenant verification
+    updated = await manager.update_feedback(
+        trace_id="tr_123",
+        feedback=-1,
+        feedback_comment="Changed my mind, needs fix",
+        tenant_id=tenant_id,
+    )
+    assert updated is True
+
+    # Unknown tenant fails update
+    wrong_tenant_updated = await manager.update_feedback(
+        trace_id="tr_123",
+        feedback=1,
+        tenant_id=uuid4(),
+    )
+    assert wrong_tenant_updated is False
+
+    with session_factory() as session:
+        msgs = session.query(Message).filter_by(conversation_id=conv_id).all()
+        assert msgs[1].feedback == -1
+        assert msgs[1].feedback_comment == "Changed my mind, needs fix"
+
 
 @pytest.mark.asyncio
 async def test_fallback_llm_stream_retry() -> None:

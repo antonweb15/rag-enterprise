@@ -130,6 +130,10 @@ class WidgetAPIApp:
             await self._handle_chat_stream(receive, send, headers, client_ip)
             return
 
+        if path in ("/api/v1/chat/feedback", "/api/v1/widget/feedback") and method == "POST":
+            await self._handle_feedback(receive, send, headers)
+            return
+
         if path in ("/widget/v1.js", "/widget/v1"):
             await self._handle_static_widget_js(send)
             return
@@ -381,6 +385,72 @@ class WidgetAPIApp:
                     "more_body": False,
                 }
             )
+
+    async def _handle_feedback(
+        self,
+        receive: Callable[[], Any],
+        send: Callable[[dict[str, Any]], Any],
+        headers: dict[str, str],
+    ) -> None:
+        """Handles POST /api/v1/chat/feedback."""
+        auth_header = headers.get("authorization", "")
+        if not auth_header.startswith("Bearer "):
+            await self._send_json(send, 401, {"error": "Missing or invalid Authorization header"})
+            return
+
+        token = auth_header[7:].strip()
+        try:
+            claims = verify_session_jwt(token, self.jwt_secret)
+        except SessionSecurityError as exc:
+            await self._send_json(send, 401, {"error": f"Invalid session token: {exc}"})
+            return
+
+        tenant_id_str = claims.get("tenant_id")
+        tenant_uuid = UUID(str(tenant_id_str)) if tenant_id_str else None
+
+        body_bytes = await self._read_body(receive)
+        try:
+            body = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+        except Exception:  # noqa: BLE001
+            await self._send_json(send, 400, {"error": "Malformed JSON body"})
+            return
+
+        trace_id = body.get("trace_id")
+        score = body.get("score") if body.get("score") is not None else body.get("feedback")
+        comment = body.get("comment")
+
+        if not trace_id or score is None:
+            await self._send_json(
+                send,
+                400,
+                {"error": "Missing required fields 'trace_id' and 'score' (or 'feedback')"},
+            )
+            return
+
+        try:
+            score_val = float(score)
+        except (ValueError, TypeError):
+            await self._send_json(send, 400, {"error": "Field 'score' must be numeric"})
+            return
+
+        if self.pipeline is not None:
+            updated = await self.pipeline.session_manager.update_feedback(
+                str(trace_id),
+                feedback=int(score_val),
+                feedback_comment=comment,
+                tenant_id=tenant_uuid,
+            )
+            if updated:
+                await self.pipeline.trace_manager.log_score(
+                    str(trace_id),
+                    name="user_feedback",
+                    value=score_val,
+                    comment=comment,
+                )
+
+        await self._send_json(
+            send, 200, {"status": "ok", "message": "Feedback recorded", "trace_id": str(trace_id)}
+        )
 
     async def _handle_static_widget_js(self, send: Callable[[dict[str, Any]], Any]) -> None:
         """Serves the widget embed script bundle."""

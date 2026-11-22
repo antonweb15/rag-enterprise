@@ -38,7 +38,13 @@ class NoOpTraceSink(BaseTraceSink):
     ) -> None:
         return None
 
-    async def log_score(self, trace_id: str, name: str, value: float) -> None:
+    async def log_score(
+        self,
+        trace_id: str,
+        name: str,
+        value: float,
+        comment: str | None = None,
+    ) -> None:
         return None
 
     async def flush(self) -> None:
@@ -58,6 +64,16 @@ class RecordedSpan:
 
 
 @dataclass(slots=True)
+class RecordedScore:
+    """A score captured in-memory."""
+
+    trace_id: str
+    name: str
+    value: float
+    comment: str | None = None
+
+
+@dataclass(slots=True)
 class RecordedTrace:
     """A trace captured in-memory."""
 
@@ -67,6 +83,7 @@ class RecordedTrace:
     input: dict[str, Any]
     spans: list[RecordedSpan] = field(default_factory=list)
     scores: dict[str, float] = field(default_factory=dict)
+    score_details: list[RecordedScore] = field(default_factory=list)
 
 
 class InMemoryTraceSink(BaseTraceSink):
@@ -75,6 +92,7 @@ class InMemoryTraceSink(BaseTraceSink):
     def __init__(self) -> None:
         self.traces: dict[str, RecordedTrace] = {}
         self.spans: list[RecordedSpan] = []
+        self.scores: list[RecordedScore] = []
 
     async def start_trace(self, ctx: TraceContext, name: str, input: dict[str, Any]) -> str:
         trace_id = str(uuid.uuid4())
@@ -108,9 +126,23 @@ class InMemoryTraceSink(BaseTraceSink):
         if trace_id in self.traces:
             self.traces[trace_id].spans.append(span)
 
-    async def log_score(self, trace_id: str, name: str, value: float) -> None:
+    async def log_score(
+        self,
+        trace_id: str,
+        name: str,
+        value: float,
+        comment: str | None = None,
+    ) -> None:
+        rec_score = RecordedScore(
+            trace_id=trace_id,
+            name=name,
+            value=value,
+            comment=comment,
+        )
+        self.scores.append(rec_score)
         if trace_id in self.traces:
             self.traces[trace_id].scores[name] = value
+            self.traces[trace_id].score_details.append(rec_score)
 
     async def flush(self) -> None:
         return None
@@ -132,6 +164,22 @@ class TraceManager:
         except Exception:  # noqa: BLE001
             # Fire-and-forget: sink failures never break application flow
             return str(uuid.uuid4())
+
+    async def log_score(
+        self,
+        trace_id: str,
+        name: str,
+        value: float,
+        comment: str | None = None,
+    ) -> None:
+        """Logs score in fire-and-forget fashion."""
+        with contextlib.suppress(Exception):
+            await self._sink.log_score(trace_id, name, value, comment=comment)
+
+    async def flush(self) -> None:
+        """Flushes sink in fire-and-forget fashion."""
+        with contextlib.suppress(Exception):
+            await self._sink.flush()
 
     @asynccontextmanager
     async def span(

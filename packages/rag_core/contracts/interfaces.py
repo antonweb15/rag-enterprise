@@ -280,6 +280,17 @@ class BaseSessionManager(ABC):
     ) -> None:
         """Appends a message to the conversation."""
 
+    async def update_feedback(
+        self,
+        trace_id: str,
+        feedback: int,
+        feedback_comment: str | None = None,
+        *,
+        tenant_id: UUID | None = None,
+    ) -> bool:
+        """Updates feedback (+1 / -1) and optional comment for a message correlated by trace_id."""
+        return False
+
 
 # --- 2.3. Retriever & Reranker Interface ---
 
@@ -588,7 +599,13 @@ class BaseTraceSink(ABC):
         """Writes a span (intent/retrieval/rerank/llm_call) with mandatory attributes."""
 
     @abstractmethod
-    async def log_score(self, trace_id: str, name: str, value: float) -> None:
+    async def log_score(
+        self,
+        trace_id: str,
+        name: str,
+        value: float,
+        comment: str | None = None,
+    ) -> None:
         """Online feedback 👍/👎 (+1/-1) and LLM-as-a-Judge metrics."""
 
     async def flush(self) -> None:
