@@ -33,7 +33,10 @@ def _psycopg_url(container: object) -> str:
 @pytest.fixture(scope="session")
 def _pg_container() -> Iterator[object]:
     try:
-        from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
+        try:
+            from testcontainers.community.postgres import PostgresContainer  # noqa: PLC0415
+        except ImportError:
+            from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
     except ImportError:
         if in_ci():
             pytest.fail("testcontainers is required in CI for the RLS security contract tests.")
