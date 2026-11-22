@@ -29,7 +29,26 @@ def docker_available() -> bool:
         docker.from_env().ping()
         return True
     except Exception:
-        return False
+        pass
+
+    try:
+        import shutil
+        import subprocess
+
+        if shutil.which("docker") is not None:
+            res = subprocess.run(
+                ["docker", "info"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=5,
+            )
+            if res.returncode == 0:
+                return True
+    except Exception:
+        pass
+
+    return False
 
 
 # Skip ONLY outside CI. In CI we let the tests run and fail loudly if Docker is missing,
