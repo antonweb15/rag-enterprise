@@ -52,7 +52,7 @@
 | **F** | Query Understanding + LLM Generation | Intent Router, Query Condensation, LLM Runner с fallback, цитаты, anti-injection | оба |
 | **G** | Каналы доставки (Web-виджет → Telegram → REST/SSE → CLI) | `BaseChannel`, Shadow DOM виджет, брендинг | оба |
 | **H** | Observability: Langfuse | trace-контракт, маскировка ПД, fire-and-forget, feedback 👍/👎 | оба |
-| **I** | Admin Panel (SPA + `/api/v1/admin/*`) | `fastapi-users`, RBAC, 2FA, файл-менеджер (LISTEN/NOTIFY), §5A управление доступом | оба |
+| **I** | Admin Panel (SPA + `/api/v1/admin/*`) | `fastapi-users`, RBAC, 2FA, файл-менеджер (LISTEN/NOTIFY), §5A управление доступом | оба (✅ Реализован) |
 | **J** | Evaluation Gate (RAGAS) | золотой датасет, метрики SLO в CI | оба |
 | **K** | Лицензирование (клиент + сервер лицензий) | клиент: Ed25519-валидатор/`hardware_id`/heartbeat/grace; сервер: issuance/revocation/CRL/HSM | клиент — box+cloud; сервер — только вендор |
 | **L** | Vendor Backoffice | `/api/v1/backoffice/*`, клиенты/лицензии/коды, реестр коробок, impersonation | cloud/вендор |
@@ -237,12 +237,16 @@
   лицензионный экран, блок доступа к Langfuse (URL/логин), CLI-дублёр (`rag-admin`, `typer`) для air-gapped.
 - Приватная rate-limit политика `admin_rate_limit_per_minute` (мягкий лимит по
   аутентифицированному пользователю; отдельно от публичного `widget-api`) — `eval_and_ops.md` §3.5.
+- *Архитектурные примечания (Post-MVP бэклог):*
+  - **Переход на полный стек `fastapi-users`:** текущая реализация выполнена на легковесном безопасном ASGI-роутере (`CookieTransport`, PBKDF2-HMAC-SHA256, HS256 JWT, Double-Submit CSRF, TOTP 2FA, RBAC, fail-closed). Переход на полный стек `fastapi-users` — это отдельная задача рефакторинга роутинга во всем репозитории (включая каналы `widget_app.py`), не влияющая на текущую безопасность и функционал админки.
+  - **UI/UX Redesign:** текущая SPA реализована на легковесном vanilla-TS/Vite бандле (<25 КБ). Перенос готового SPA на компонентную модель React 19 + Tailwind v4 + shadcn/ui вынесен в отдельный этап продуктовой полировки UI/UX (§2.6/§12).
+  - **E2E Playwright-тесты:** перенесены на этап интеграционного CI/CD.
 
 **Тестовое покрытие:**
 - Аутентификация/CSRF/2FA, RBAC-матрица (viewer не мутирует).
 - Аудит каждой мутации ACL/допусков (повтор §1.3 п.5).
 - SSE статусы инжеста через LISTEN/NOTIFY (не in-memory), fallback polling.
-- E2E (Playwright) ключевых сценариев админки.
+- E2E (Playwright) ключевых сценариев админки (Post-MVP / CI).
 
 ### Этап J — Evaluation Gate (RAGAS)
 
@@ -534,3 +538,14 @@
 - [ ] Облако: деплой, RLS-изоляция тенантов проверена; Langfuse-проекты заведены.
 - [ ] Коробка: образ собран, лицензия активируется, `pg_dump` hook работает, CLI-дублёр доступен.
 - [ ] Ручные инструкции (§3) выполнены и задокументированы для оператора/клиента.
+
+---
+
+## 7. 🛠️ Технический бэклог / Архитектурный техдолг (Post-MVP Refactoring)
+
+1. **Миграция аутентификации на библиотечный `fastapi-users`:**
+   - Переход на полный стек `fastapi-users` — это отдельная задача рефакторинга роутинга во всем репозитории (включая каналы `widget_app.py`), не влияющая на текущую безопасность и функционал админки (текущий ASGI-роутер полностью fail-closed, поддерживает CookieTransport, CSRF, TOTP 2FA, HS256 JWT и RBAC).
+2. **UI/UX Redesign Админ-панели:**
+   - Перенос готового SPA на компонентную модель React 19 + Tailwind v4 + shadcn/ui (§2.6/§12) после стабилизации всех API-контрактов.
+3. **E2E Playwright-тесты:**
+   - Развертывание сквозных браузерных сценариев в рамках интеграционного CI/CD пайплайна.

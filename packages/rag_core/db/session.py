@@ -20,12 +20,19 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from sqlalchemy import event, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Connection
-from sqlalchemy.orm import Session, SessionTransaction
+from sqlalchemy.orm import Session, SessionTransaction, sessionmaker
 
 # Canonical session factory type alias used across ingestion, retrieval and generation
 SessionFactory = Callable[[], Session]
+
+
+def build_session_factory(postgres_dsn: str) -> sessionmaker[Session]:
+    """Builds a SQLAlchemy sessionmaker bound to postgres_dsn."""
+    engine = create_engine(postgres_dsn, pool_pre_ping=True)
+    return sessionmaker(bind=engine, class_=Session, expire_on_commit=False)
+
 
 # Canonical GUC names (match the RLS policies in storage_schema.md §4.1).
 TENANT_GUC = "app.current_tenant_id"

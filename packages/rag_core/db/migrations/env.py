@@ -11,9 +11,12 @@ import os
 from logging.config import fileConfig
 
 from alembic import context
+from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 
 from rag_core.db.models import Base
+
+load_dotenv()
 
 config = context.config
 

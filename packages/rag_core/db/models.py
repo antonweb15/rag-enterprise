@@ -319,7 +319,7 @@ class AuditLog(Base):
     action: Mapped[str] = mapped_column(Text, nullable=False)
     object_type: Mapped[str | None] = mapped_column(Text)
     object_id: Mapped[str | None] = mapped_column(Text)
-    ip_address: Mapped[str | None] = mapped_column(INET)
+    ip_address: Mapped[str | None] = mapped_column(INET().with_variant(Text, "sqlite"))
     user_agent: Mapped[str | None] = mapped_column(Text)
     payload: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime.datetime] = mapped_column(
@@ -428,4 +428,33 @@ class DocumentAcl(Base):
     granted_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class AdminUser(Base):
+    """Administrator user for the private admin panel (fastapi-users/RBAC)."""
+
+    __tablename__ = "admin_users"
+    __table_args__ = (
+        UniqueConstraint("email", name="uq_admin_users_email"),
+        CheckConstraint("role IN ('admin', 'operator', 'viewer')", name="ck_admin_users_role"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE")
+    )
+    email: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    hashed_password: Mapped[str] = mapped_column(Text, nullable=False)
+    role: Mapped[str] = mapped_column(Text, nullable=False, default="viewer")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_superuser: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    totp_secret: Mapped[str | None] = mapped_column(Text)
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )

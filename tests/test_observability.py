@@ -656,9 +656,9 @@ async def test_unconfigured_langfuse_sink_noop() -> None:
         return 200, b'{"status": "ok"}'
 
     sink = LangfuseTraceSink(
-        Settings(),
-        public_key=None,
-        secret_key=None,
+        Settings(langfuse_public_key=None, langfuse_secret_key=None),
+        public_key="",
+        secret_key="",
         http_transport=mock_transport,
     )
     assert not sink.is_configured

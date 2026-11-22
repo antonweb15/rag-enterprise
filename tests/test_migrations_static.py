@@ -26,6 +26,8 @@ _EXPECTED_CHAIN = [
     "0006_rls_policies",
     "0007_channel_backfill",
     "0008_schema_grants",
+    "0009_admin_users",
+    "0010_backoffice_rls",
 ]
 
 # Destructive operations forbidden in upgrade() (storage_schema.md §5 item 4).
@@ -161,6 +163,24 @@ def test_schema_grants_make_self_hosted_self_contained() -> None:
     assert "BYPASSRLS" in src
     assert "NOBYPASSRLS" in src
     assert "insufficient_privilege" in src
+
+
+def test_backoffice_rls_policies_fail_closed() -> None:
+    """0010 enables RLS on backoffice tables and alembic_version with service_role only."""
+    src = (VERSIONS_DIR / "0010_backoffice_rls.py").read_text(encoding="utf-8")
+    for table in (
+        "customers",
+        "backoffice_users",
+        "orders",
+        "activation_codes",
+        "box_deployments",
+        "backoffice_audit_log",
+    ):
+        assert f'"{table}"' in src
+    assert "ENABLE ROW LEVEL SECURITY" in src
+    assert "service_all_" in src
+    assert "alembic_version" in src
+    assert "service_role" in src
 
 
 def test_orm_license_features_default_matches_ddl() -> None:

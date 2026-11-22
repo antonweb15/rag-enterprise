@@ -32,12 +32,18 @@ def _psycopg_url(container: object) -> str:
 
 @pytest.fixture(scope="session")
 def _pg_container() -> Iterator[object]:
+    try:
+        from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
+    except ImportError:
+        if in_ci():
+            pytest.fail("testcontainers is required in CI for the RLS security contract tests.")
+        pytest.skip("testcontainers not installed")
+
     if not docker_available():
         # In CI Docker is mandatory -> fail loudly (never silently drop security coverage).
         if in_ci():
             pytest.fail("Docker is required in CI for the RLS security contract tests.")
         pytest.skip("Docker unavailable")
-    from testcontainers.postgres import PostgresContainer  # noqa: PLC0415
 
     # Image with pgvector preinstalled (vector/sparsevec types + HNSW).
     # driver="psycopg" (psycopg v3) is REQUIRED: testcontainers 4.x defaults the connection

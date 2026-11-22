@@ -11,7 +11,7 @@ rejected, which is a defense-in-depth measure at the contract boundary (no silen
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Generic, Literal, TypeVar
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -20,6 +20,7 @@ from rag_core.contracts.enums import (
     AccessLevel,
     AclPermission,
     ActivationCodeStatus,
+    AdminRole,
     ChannelEventType,
     ChannelType,
     CustomerStatus,
@@ -299,6 +300,7 @@ class Group(CoreModel):
     name: str
     access_level: AccessLevel = AccessLevel.PUBLIC  # the group's base clearance level
     external_ref: str | None = None  # group id in the IdP (OIDC/SAML/SCIM), NULL for local
+    created_at: datetime | None = None
 
 
 class Collection(CoreModel):
@@ -307,6 +309,7 @@ class Collection(CoreModel):
     name: str
     access_level: AccessLevel = AccessLevel.PUBLIC
     parent_id: UUID | None = None  # collection hierarchy (knowledge bases/folders)
+    created_at: datetime | None = None
 
 
 class DocumentAclEntry(CoreModel):
@@ -355,8 +358,11 @@ class DocumentUploadRequest(CoreModel):
 
 class DocumentListItem(CoreModel):
     id: UUID
+    tenant_id: UUID | None = None
     source_uri: str
     file_name: str
+    content_hash: str | None = None
+    mime_type: str | None = None
     status: DocumentStatus
     access_level: AccessLevel = AccessLevel.PUBLIC
     size_bytes: int | None = None
@@ -368,23 +374,25 @@ class DocumentListItem(CoreModel):
 
 
 class ChunkView(CoreModel):
-    """Embeddings are NOT returned by default: 1024 float x N chunks = megabytes of JSON.
+    """Parent/child chunk tree with safe vector stripping.
 
-    dense_embedding/sparse_embedding are filled only with include_vectors=true and only for a
-    single chunk.
+    `embedding`/`sparse_vector` are populated only for child chunks and only when the caller
+    requests a single chunk with `include_vectors=True`; parents never carry vectors.
     """
 
-    chunk_id: UUID
+    id: UUID
+    chunk_type: Literal["parent", "child"]
     parent_id: UUID | None = None
-    level: Literal["parent", "child"]
-    content: str
-    token_count: int
     chunk_index: int
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    dense_norm: float | None = None
-    has_sparse_vector: bool = False
-    dense_embedding: list[float] | None = None
-    sparse_embedding: dict[int, float] | None = None
+    token_count: int
+    content: str
+    access_level: AccessLevel = AccessLevel.PUBLIC
+    embedding: list[float] | None = None
+    sparse_vector: dict[int, float] | None = None
+    embedding_model_id: str | None = None
+    embedding_version: int | None = None
+    created_at: datetime | None = None
+    children: list[ChunkView] = Field(default_factory=list)
 
 
 class LicenseActivationRequest(CoreModel):
@@ -421,8 +429,8 @@ class LicenseStatus(CoreModel):
 class AuditLogEntry(CoreModel):
     id: UUID
     tenant_id: UUID | None = None
-    actor_user_id: UUID
-    actor_email: str
+    actor_user_id: UUID | None = None
+    actor_email: str | None = None
     action: str  # 'document.upload', 'document.delete', 'license.activate', ... (action type)
     object_type: str | None = None
     object_id: str | None = None
@@ -449,6 +457,126 @@ class DashboardStats(CoreModel):
     storage_bytes_used: int = 0
     queries_last_24h: int = 0
     p95_retrieval_latency_ms: float | None = None
+
+
+T = TypeVar("T")
+
+
+class Page(CoreModel, Generic[T]):
+    items: list[T]
+    total: int
+    page: int
+    per_page: int
+    pages: int
+
+
+class AdminUserRead(CoreModel):
+    id: UUID
+    tenant_id: UUID | None = None
+    email: str
+    role: AdminRole
+    is_active: bool = True
+    is_superuser: bool = False
+    is_verified: bool = True
+    totp_enabled: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminUserCreate(CoreModel):
+    email: str
+    password: str
+    role: AdminRole = AdminRole.VIEWER
+    tenant_id: UUID | None = None
+
+
+class AdminUserUpdate(CoreModel):
+    role: AdminRole | None = None
+    is_active: bool | None = None
+    password: str | None = None
+
+
+class AdminLoginRequest(CoreModel):
+    email: str
+    password: str
+    totp_code: str | None = None
+
+
+class AdminLoginResponse(CoreModel):
+    user: AdminUserRead
+    csrf_token: str
+    message: str = "ok"
+
+
+class TwoFactorSetupResponse(CoreModel):
+    secret: str
+    otpauth_uri: str
+
+
+class TwoFactorVerifyRequest(CoreModel):
+    code: str
+
+
+class DocumentReclassifyRequest(CoreModel):
+    access_level: AccessLevel
+
+
+class UserRead(CoreModel):
+    id: UUID
+    tenant_id: UUID | None = None
+    channel_user_id: str
+    channel: ChannelType
+    access_level: AccessLevel
+    is_active: bool
+    user_metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
+class UserCreateRequest(CoreModel):
+    channel_user_id: str
+    channel: ChannelType = ChannelType.TELEGRAM
+    access_level: AccessLevel = AccessLevel.PUBLIC
+    is_active: bool = True
+    user_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class UserUpdateRequest(CoreModel):
+    access_level: AccessLevel | None = None
+    is_active: bool | None = None
+    user_metadata: dict[str, Any] | None = None
+
+
+class GroupCreateRequest(CoreModel):
+    name: str
+    access_level: AccessLevel = AccessLevel.PUBLIC
+    external_ref: str | None = None
+
+
+class GroupMemberAddRequest(CoreModel):
+    user_id: UUID
+
+
+class CollectionCreateRequest(CoreModel):
+    name: str
+    access_level: AccessLevel = AccessLevel.PUBLIC
+    parent_id: UUID | None = None
+
+
+class DocumentAclCreateRequest(CoreModel):
+    principal_type: PrincipalType
+    principal_id: UUID
+    permission: AclPermission = AclPermission.READ
+
+
+class PlaygroundRetrieveRequest(CoreModel):
+    query: str
+    access_level: AccessLevel = AccessLevel.PUBLIC
+
+
+class PlaygroundRetrieveResponse(CoreModel):
+    candidates: list[RetrievalCandidate]
+    effective_access_level: AccessLevel
 
 
 # --- Vendor Backoffice & License Server (see core/vendor_backoffice.md, core/license_server.md) ---
