@@ -46,6 +46,50 @@ jobs:
       - name: Pytest
         run: pytest -q
 
+      # Stage J quality gate (IMPLEMENTATION_PLAN.md Stage J, core/eval_and_ops.md §1/§4).
+      # The offline self-check always runs as a smoke of the gate plumbing (no infra needed) and
+      # blocks the merge if the gate itself regresses.
+      - name: Evaluation gate - offline self-check (smoke)
+        run: python -m tests.eval_ragas --self-check --json-report eval-report-selfcheck.json
+
+      # The LIVE LLM-judged RAGAS/IR gate runs only when the eval infrastructure is configured
+      # (repo variable RUN_EVAL_GATE=1 + the secrets/vars below). It installs the `eval` extra so
+      # the real `ragas` scorer is used (not the heuristic fallback), seeds the golden corpus so the
+      # QRELS chunk ids exist, runs a small smoke first, then the full gate - blocking the merge on
+      # any quality degradation.
+      - name: Install eval extra (RAGAS) + seed the golden corpus
+        if: vars.RUN_EVAL_GATE == '1'
+        env:
+          POSTGRES_DSN: ${{ secrets.EVAL_POSTGRES_DSN }}
+          POSTGRES_APP_DSN: ${{ secrets.EVAL_POSTGRES_APP_DSN }}
+        run: |
+          pip install -e ".[eval,ingestion,retrieval]"
+          python -m tests.eval_ragas.seed_corpus \
+            --tenant-id "${{ vars.EVAL_TENANT_ID }}" --user-id "${{ vars.EVAL_USER_ID }}"
+
+      - name: Evaluation gate - live RAGAS/IR (blocks merge on regression)
+        if: vars.RUN_EVAL_GATE == '1'
+        env:
+          POSTGRES_DSN: ${{ secrets.EVAL_POSTGRES_DSN }}
+          POSTGRES_APP_DSN: ${{ secrets.EVAL_POSTGRES_APP_DSN }}
+          GROQ_API_KEY: ${{ secrets.EVAL_GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.EVAL_GEMINI_API_KEY }}
+        run: |
+          python -m tests.eval_ragas --smoke \
+            --tenant-id "${{ vars.EVAL_TENANT_ID }}" --user-id "${{ vars.EVAL_USER_ID }}" \
+            --json-report eval-report-smoke.json
+          python -m tests.eval_ragas \
+            --tenant-id "${{ vars.EVAL_TENANT_ID }}" --user-id "${{ vars.EVAL_USER_ID }}" \
+            --json-report eval-report.json
+
+      - name: Upload evaluation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-reports
+          path: eval-report*.json
+          if-no-files-found: ignore
+
   frontend:
     name: Frontend - Type-check & Build (pnpm workspaces)
     runs-on: ubuntu-latest

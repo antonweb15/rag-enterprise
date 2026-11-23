@@ -29,7 +29,7 @@ from rag_core.generation.prompt import PromptBuilder
 from rag_core.generation.query_condenser import QueryCondenser
 from rag_core.generation.session_memory import BaseSessionManager, InMemorySessionManager
 from rag_core.llm.fallback import FallbackLLMRunner
-from rag_core.retrieval.pipeline import SearchPipeline
+from rag_core.retrieval.pipeline import SearchPipeline, SearchResult
 from rag_core.tracing.sink import NoOpTraceSink, TraceManager
 
 NO_INFO_FALLBACK_ANSWER = (
@@ -96,8 +96,19 @@ class GenerationPipeline:
         *,
         session_id: UUID | str | None = None,
         trace_ctx: TraceContext | None = None,
+        force_rag: bool = False,
+        precomputed_search: SearchResult | None = None,
     ) -> RAGResponse:
-        """Executes the complete Query Understanding -> Retrieval -> LLM Generation pipeline."""
+        """Executes the complete Query Understanding -> Retrieval -> LLM Generation pipeline.
+
+        ``force_rag`` skips intent routing and goes straight to the RAG branch;
+        ``precomputed_search`` lets a caller inject an already-computed Stage-E
+        :class:`~rag_core.retrieval.pipeline.SearchResult` so retrieval is not run twice (both are
+        used by the Stage-J evaluation gate, which needs the IR signal and the generation signal
+        from the *same* retrieval pass).
+        """
+        if precomputed_search is not None:
+            force_rag = True
         conv_id = session_id or uuid4()
         effective_trace_ctx = trace_ctx or TraceContext(
             tenant_id=user.tenant_id,
@@ -118,19 +129,20 @@ class GenerationPipeline:
             user.tenant_id, conv_id, limit=self._settings.max_history_turns * 2
         )
 
-        # 2. Intent routing
-        async with self._trace_mgr.span(
-            trace_id, "intent_routing", input={"query": query}
-        ) as span_out:
-            intent = await self._router.route_intent(query)
-            span_out["intent"] = intent.value
+        # 2. Intent routing (skipped when the caller forces the RAG branch, e.g. the eval gate)
+        if not force_rag:
+            async with self._trace_mgr.span(
+                trace_id, "intent_routing", input={"query": query}
+            ) as span_out:
+                intent = await self._router.route_intent(query)
+                span_out["intent"] = intent.value
 
-        # 3. Handle non-RAG intents
-        if intent == IntentType.CHIT_CHAT:
-            return await self._handle_chit_chat(user, query, conv_id, trace_id)
+            # 3. Handle non-RAG intents
+            if intent == IntentType.CHIT_CHAT:
+                return await self._handle_chit_chat(user, query, conv_id, trace_id)
 
-        if intent == IntentType.META_COMMAND:
-            return await self._handle_meta_command(user, query, conv_id, trace_id)
+            if intent == IntentType.META_COMMAND:
+                return await self._handle_meta_command(user, query, conv_id, trace_id)
 
         # 4. RAG Search path: Query condensation (always emitted for canonical 5-span tree)
         async with self._trace_mgr.span(
@@ -147,13 +159,17 @@ class GenerationPipeline:
                 span_out["standalone_query"] = standalone_query
                 span_out["was_condensed"] = False
 
-        # 5. Hybrid search + Reranking (emits hybrid_retrieval and reranking spans)
-        search_res = await self._search.search(
-            user,
-            standalone_query,
-            trace_id=trace_id,
-            trace_manager=self._trace_mgr,
-        )
+        # 5. Hybrid search + Reranking (emits hybrid_retrieval and reranking spans). A caller may
+        # inject a precomputed SearchResult to avoid a second retrieval pass over the same query.
+        if precomputed_search is not None:
+            search_res = precomputed_search
+        else:
+            search_res = await self._search.search(
+                user,
+                standalone_query,
+                trace_id=trace_id,
+                trace_manager=self._trace_mgr,
+            )
 
         # 6. Confidence check
         if not search_res.is_confident or not search_res.parents:

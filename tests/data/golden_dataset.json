@@ -1,0 +1,194 @@
+[
+  {
+    "id": "eval_001",
+    "question": "What is the maximum size of a parent chunk in the system?",
+    "ground_truth_answer": "The parent chunk size is between 800 and 1200 tokens.",
+    "ground_truth_contexts": [
+      "Parent Chunks: 800-1200 tokens (logical sections with heading and structure metadata)."
+    ],
+    "ground_truth_chunk_ids": [
+      "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
+    ],
+    "access_level": 0
+  },
+  {
+    "id": "eval_002",
+    "question": "How are dense and sparse retrieval results combined?",
+    "ground_truth_answer": "Dense and sparse results are fused with Reciprocal Rank Fusion (RRF) before reranking.",
+    "ground_truth_contexts": [
+      "Hybrid search fuses the dense (cosine) and sparse (BM25) arms with Reciprocal Rank Fusion (RRF); fusion happens before reranking."
+    ],
+    "ground_truth_chunk_ids": [
+      "b1ffc088-8d1a-4fe7-aa5c-5ca8ac470b22"
+    ],
+    "access_level": 0
+  },
+  {
+    "id": "eval_003",
+    "question": "What embedding model does the ingestion pipeline use?",
+    "ground_truth_answer": "Ingestion uses the BGE-M3 embedder producing a 1024-dimension dense vector and a sparse vector.",
+    "ground_truth_contexts": [
+      "The embedder is BGE-M3: it produces a 1024-dimensional dense embedding and a sparse (lexical) embedding, batched by 32."
+    ],
+    "ground_truth_chunk_ids": [
+      "c2aad177-7e2b-4df6-9b4d-4db7bd560c33"
+    ],
+    "access_level": 0
+  },
+  {
+    "id": "eval_004",
+    "question": "What happens when the confidence gate is not passed?",
+    "ground_truth_answer": "When the best rerank score is below the threshold the flow short-circuits: no hydration, no LLM call, and a 'no information found' answer is returned.",
+    "ground_truth_contexts": [
+      "The Confidence Gate blocks the flow when max(rerank_score) < threshold: no Small-to-Big hydration and no LLM call are performed, and the pipeline returns the 'no information found' answer."
+    ],
+    "ground_truth_chunk_ids": [
+      "d3bbe266-6f3c-4ce5-8c3e-3ec6ce650d44"
+    ],
+    "access_level": 0
+  },
+  {
+    "id": "eval_005",
+    "question": "What default access level does an anonymous widget session get?",
+    "ground_truth_answer": "An anonymous widget session is fail-closed to access_level 0 (Public).",
+    "ground_truth_contexts": [
+      "A widget session with auth_mode=anonymous is fail-closed to access_level 0 (Public); an OIDC level comes only from a verified IdP claim recomputed on the backend."
+    ],
+    "ground_truth_chunk_ids": [
+      "e4ccf355-5a4d-4bd4-7d2f-2fd5df740e55"
+    ],
+    "access_level": 1
+  },
+  {
+    "id": "eval_006",
+    "question": "What target P95 latency is defined for the retrieval stage?",
+    "ground_truth_answer": "The target is P95 retrieval latency below 400 ms at ef_search = 40.",
+    "ground_truth_contexts": [
+      "NFR: P95 retrieval latency < 400 ms with ef_search=40; P95 time-to-first-token < 1.5 s."
+    ],
+    "ground_truth_chunk_ids": [
+      "f5dd0444-4b5e-4ac3-6e1a-1ae4ef830f66"
+    ],
+    "access_level": 1
+  },
+  {
+    "id": "eval_007",
+    "question": "How is a document re-classification propagated to its chunks?",
+    "ground_truth_answer": "Changing documents.access_level synchronizes parent_chunks.access_level and child_chunks.access_level within a single transaction (cascade).",
+    "ground_truth_contexts": [
+      "A re-classification cascade updates documents.access_level and, in the same transaction, synchronizes parent_chunks.access_level and child_chunks.access_level."
+    ],
+    "ground_truth_chunk_ids": [
+      "0a6e1533-3c6f-4ab2-5f0b-0bf3af920a77"
+    ],
+    "access_level": 2
+  },
+  {
+    "id": "eval_008",
+    "question": "Which signing algorithm secures the offline license validation?",
+    "ground_truth_answer": "Offline license validation uses Ed25519 signatures, separate from the HS256 session key.",
+    "ground_truth_contexts": [
+      "The license validator verifies Ed25519 signatures offline; the session key (HS256) is kept separate from the license key (Ed25519)."
+    ],
+    "ground_truth_chunk_ids": [
+      "1b7f2644-4d70-4bc1-4a1c-1ca2ba030b88"
+    ],
+    "access_level": 3
+  },
+  {
+    "id": "eval_009",
+    "question": "How large is a child chunk used for precise search?",
+    "ground_truth_answer": "A child chunk is between 150 and 250 tokens.",
+    "ground_truth_contexts": [
+      "Child Chunks: 150-250 tokens, used for precise dense and sparse (lexical) search."
+    ],
+    "ground_truth_chunk_ids": [
+      "2c8f3755-5e81-4cd2-5b2d-2db3cb140c99"
+    ],
+    "access_level": 0
+  },
+  {
+    "id": "eval_010",
+    "question": "What value of ef_search is used for the HNSW index during retrieval?",
+    "ground_truth_answer": "Retrieval sets ef_search to 40 via SET LOCAL on the dense arm.",
+    "ground_truth_contexts": [
+      "The dense arm issues SET LOCAL hnsw.ef_search = 40 before the HNSW top-k scan."
+    ],
+    "ground_truth_chunk_ids": [
+      "3d9a4866-6f92-4de3-6c3e-3ec4dc250daa"
+    ],
+    "access_level": 0
+  },
+  {
+    "id": "eval_011",
+    "question": "Which weights does RRF use for the dense and sparse arms?",
+    "ground_truth_answer": "RRF uses alpha 0.6 for the dense arm and beta 0.4 for the sparse arm, with k=60.",
+    "ground_truth_contexts": [
+      "Reciprocal Rank Fusion weights the dense arm with alpha=0.6 and the sparse arm with beta=0.4, using the rank constant k=60."
+    ],
+    "ground_truth_chunk_ids": [
+      "4e0b5977-7fa3-4ef4-7d4f-4fd5ed360dbb"
+    ],
+    "access_level": 0
+  },
+  {
+    "id": "eval_012",
+    "question": "What confidence threshold blocks the LLM call after reranking?",
+    "ground_truth_answer": "The confidence gate threshold is 0.35: when the best rerank score is below it the LLM is not called.",
+    "ground_truth_contexts": [
+      "The Confidence Gate uses threshold tau = 0.35 on the maximum rerank score."
+    ],
+    "ground_truth_chunk_ids": [
+      "5f1c6a88-8ab4-4f05-8e5a-5ae6fe470ecc"
+    ],
+    "access_level": 1
+  },
+  {
+    "id": "eval_013",
+    "question": "How many dialog turns of history are kept for query condensation?",
+    "ground_truth_answer": "Up to 5 dialog turns (10 messages) of history are retained for condensation.",
+    "ground_truth_contexts": [
+      "Query condensation retains up to max_history_turns = 5 turns (one turn = a user and an assistant message)."
+    ],
+    "ground_truth_chunk_ids": [
+      "6a2d7b99-9bc5-4016-9f6b-6bf70f580fdd"
+    ],
+    "access_level": 1
+  },
+  {
+    "id": "eval_014",
+    "question": "What generation temperature is recommended for factual RAG answers?",
+    "ground_truth_answer": "A generation temperature of 0.1 (recommended below 0.3) is used for factual RAG answers.",
+    "ground_truth_contexts": [
+      "The LLM generation temperature is 0.1 for determinism/factuality (recommended <= 0.3)."
+    ],
+    "ground_truth_chunk_ids": [
+      "7b3e8caa-acd6-4127-a07c-7cf81f690fee"
+    ],
+    "access_level": 2
+  },
+  {
+    "id": "eval_015",
+    "question": "How is indirect prompt injection from documents mitigated during prompt packing?",
+    "ground_truth_answer": "Retrieved context is wrapped in an untrusted sandbox so document text cannot override the system prompt.",
+    "ground_truth_contexts": [
+      "Prompt packing places retrieved chunks in an untrusted sandbox block, defending the system prompt against indirect prompt injection from document content."
+    ],
+    "ground_truth_chunk_ids": [
+      "8c4f9dbb-bde7-4238-b18d-8df92f7a0f11"
+    ],
+    "access_level": 2
+  },
+  {
+    "id": "eval_016",
+    "question": "What token budget limits the retrieved context passed to the LLM?",
+    "ground_truth_answer": "The retrieved context is capped at 4000 tokens by the context budget.",
+    "ground_truth_contexts": [
+      "generation_max_context_tokens = 4000 bounds the total retrieved-context token budget fed to the LLM."
+    ],
+    "ground_truth_chunk_ids": [
+      "9d5a0ecc-cef8-4349-c29e-9ea03a8b0f22"
+    ],
+    "access_level": 3
+  }
+]

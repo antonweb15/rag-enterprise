@@ -53,6 +53,18 @@ channels = [
 telegram = [
     "aiogram>=3.17.0",
 ]
+# Stage J (Evaluation Gate, core/eval_and_ops.md §1). The RAGAS generation/alignment metrics
+# (Faithfulness, Answer Relevance, Context Precision/Recall) are judged by an LLM via the `ragas`
+# package. It is imported LAZILY in tests.eval_ragas.scoring, so the gate's deterministic IR metrics
+# and its offline heuristic scorer work without it installed (the unit tests and `--self-check` run
+# with the fallback); install this extra to run the real LLM-judged RAGAS gate in CI.
+eval = [
+    # Pinned to the 0.2.x line: the scorer in tests.eval_ragas.scoring targets the 0.2 API
+    # (instance metrics + `answer_relevance`, llm/embeddings required). 0.3 is unreleased/unstable
+    # and 0.1 has the old module-level metrics - either breaks the live gate.
+    "ragas>=0.2,<0.3",
+    "datasets>=2.0",
+]
 dev = [
     "ruff>=0.6",
     "mypy>=1.11",
@@ -186,6 +198,9 @@ module = [
     "aiogram.*",
     "argon2",
     "typer",
+    # Stage J: ragas is the optional `eval` extra, imported LAZILY in tests.eval_ragas.scoring
+    # (the heuristic fallback runs without it).
+    "ragas.*",
 ]
 ignore_missing_imports = true
 
