@@ -20,9 +20,7 @@ import json
 import logging
 import math
 import os
-import platform
 import socket
-import uuid as uuid_pkg
 from collections.abc import AsyncGenerator, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -1223,19 +1221,17 @@ class AdminService:
         return self._get_license_status_sync(tenant_id)
 
     def get_machine_fingerprint(self) -> MachineFingerprint:
-        """Computes composite hardware fingerprint (MAC, CPU, host, system node)."""
-        hostname = socket.gethostname()
-        system = platform.system()
-        node = platform.node()
-        machine = platform.machine()
-        processor = platform.processor() or "unknown"
-        mac = str(uuid_pkg.getnode())
-        raw = f"{hostname}:{system}:{node}:{machine}:{processor}:{mac}"
-        hw_id = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        """Computes the composite hardware fingerprint via the SINGLE shared implementation.
+
+        Delegates to :func:`rag_core.licensing.hardware.compute_hardware_id` so the admin panel and
+        the Stage K ``Ed25519LicenseValidator`` derive the *same* ``hardware_id`` for the same host
+        (`deepseek-criticism.md` Step K §🟠5) instead of two divergent ``sha256`` recipes.
+        """
+        from rag_core.licensing.hardware import compute_hardware_id
 
         return MachineFingerprint(
-            hardware_id=hw_id,
-            hostname=hostname,
+            hardware_id=compute_hardware_id(),
+            hostname=socket.gethostname(),
             collected_at=datetime.now(UTC),
         )
 

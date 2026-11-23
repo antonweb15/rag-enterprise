@@ -402,7 +402,10 @@ class LicenseActivationRequest(CoreModel):
 
 
 class MachineFingerprint(CoreModel):
-    hardware_id: str  # sha256(cpu_id + mac_addr)
+    # Composite, threshold-tolerant fingerprint: sha256 over several sorted host signals
+    # (machine-id/MAC/arch/hostname/cpu-count), NOT a bare sha256(cpu_id + mac_addr). See
+    # rag_core.licensing.hardware.compute_hardware_id (the single source of truth).
+    hardware_id: str
     hostname: str
     collected_at: datetime
 

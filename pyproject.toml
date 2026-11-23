@@ -24,6 +24,10 @@ dependencies = [
     # layer falls back to PBKDF2-HMAC-SHA256 (600k iters) only if argon2 is unavailable, but the
     # canonical deployment ships with Argon2id.
     "argon2-cffi>=23.1",
+    # Stage K (Licensing, core/licensing_and_distribution.md §3 / core/license_server.md). The
+    # Ed25519 PASETO/JWT license-token codec is a pure-Python RFC 8032 implementation in
+    # rag_core.admin.license_crypto (wrapped by rag_core.licensing); it needs NO native crypto
+    # dependency, which keeps the air-gapped box artifact lean.
 ]
 
 [project.optional-dependencies]

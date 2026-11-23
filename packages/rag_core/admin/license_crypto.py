@@ -16,10 +16,16 @@ from typing import Any
 
 from rag_core.contracts.enums import LicenseFeature, LicenseMode, LicensePlan
 from rag_core.contracts.models import LicensePayload
+from rag_core.licensing.errors import InvalidLicenseError
 
 
-class LicenseValidationError(Exception):
-    """Raised when license token signature, expiry or hardware binding is invalid."""
+class LicenseValidationError(InvalidLicenseError):
+    """Raised when license token signature, expiry or hardware binding is invalid.
+
+    Subclasses :class:`rag_core.licensing.errors.InvalidLicenseError` so the two licensing stacks
+    (the Stage I admin codec and the Stage K ``rag_core.licensing`` validator) share ONE error
+    family: a consumer catching ``LicenseError``/``InvalidLicenseError`` also catches this.
+    """
 
 
 # --- Pure-Python RFC 8032 Ed25519 Implementation ---
