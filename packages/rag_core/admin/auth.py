@@ -56,7 +56,12 @@ def hash_password(password: str) -> str:
         ph = argon2.PasswordHasher(
             time_cost=3, memory_cost=65536, parallelism=4, hash_len=32, type=argon2.Type.ID
         )
-        return cast(str, ph.hash(password))
+        # NOTE: assign-then-return (not cast) so this type-checks in BOTH environments:
+        # when argon2-cffi stubs are present `hash()` is typed `str` (a cast would be flagged
+        # `redundant-cast`), and when argon2 is untyped it returns `Any` (returning it directly
+        # would trip `warn-return-any`). A typed local variable satisfies strict mypy either way.
+        hashed: str = ph.hash(password)
+        return hashed
     except ImportError:
         salt = secrets.token_hex(16)
         iterations = 600_000
