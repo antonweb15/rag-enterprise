@@ -32,14 +32,15 @@ The **Vendor Backoffice** is a separate **vendor super-admin contour** through w
 
 ## 3. Backoffice roles (RBAC)
 
-| Role | Customers/orders | Licenses/codes | Boxes | Impersonation | Backoffice users |
-|---|---|---|---|---|---|
-| `superadmin` | CRUD | Issue/revoke/renew | CRUD | ✅ (break-glass) | Management |
-| `support` | View | View | View + heartbeat | ✅ (break-glass) | — |
-| `finance` | Orders, invoices, renewals | Renewal/upgrade | View | — | — |
-| `sales` | Customers, orders | Code generation | View deliveries | — | — |
+| Role | Customers/orders | Licenses/codes | Boxes | Impersonation | Tenant lifecycle | Backoffice users |
+|---|---|---|---|---|---|---|
+| `superadmin` | CRUD | Issue/revoke/renew | CRUD | ✅ (break-glass) | Provision/suspend/offboard/backup/restore | Management |
+| `support` | View | View | View + heartbeat | ✅ (break-glass) | — | — |
+| `finance` | Orders, invoices, renewals | Renewal/upgrade | View | — | — | — |
+| `sales` | Customers, orders | Code generation | View deliveries | — | — | — |
 
 - Access to tenant data (documents/chunks) for `finance`/`sales` is **forbidden**; `support`/`superadmin` — only via break-glass impersonation with auditing.
+- The SaaS tenant lifecycle capabilities (`tenant:provision`, `tenant:offboard`, `tenant:backup`) are held by `superadmin` **only** — they create/destroy whole installations and run juridical data deletion.
 
 ---
 
@@ -94,7 +95,27 @@ The super-admin sees all cloud projects in **a single self-hosted Langfuse** (ro
 | `POST` | `/api/v1/backoffice/tenants/{id}/observability/reset-password` | Force-reset the observer's password (one-time display) |
 | `GET` | `/api/v1/backoffice/observability/tenants` | Summary: projects, `provisioned` status, last login |
 
-Provisioning goes through the Langfuse **Org API / SCIM** (self-hosted; initially manual in the UI is acceptable). Only `{ url, username, provisioned }` is written to `tenants.config.observability` — **the password is not stored**. The box registry (`box_deployments`) is extended with `telemetry_opt_out` / `observability_forward_enabled`; forwarding from Box to the vendor Langfuse is strictly opt-in.
+Provisioning goes through the Langfuse **Org API / SCIM** (self-hosted; initially manual in the UI is acceptable). Only `{ url, username, provisioned }` is written to `tenants.config.observability` — **the password is not stored**. The programmatic lifecycle path (§5.2 `/tenants/provision`) drives the same project creation through the `LangfuseProvisioner` port, which returns exactly that `ObservabilityConfig` shape; the one-time `reset-password` is an interactive-only operation of this subsection. The box registry (`box_deployments`) is extended with `telemetry_opt_out` / `observability_forward_enabled`; forwarding from Box to the vendor Langfuse is strictly opt-in.
+
+---
+
+### 5.2. SaaS tenant lifecycle (`superadmin` only)
+
+Atomic provisioning / suspension / juridical offboarding / backup-restore of a cloud tenant. The DB state is written in one transaction and committed **first**; irreversible external side-effects (the Langfuse project, the S3 object prefix) run **after** commit (compensated on failure), so a committed DB can never diverge from an un-rolled-back external resource.
+
+| Method | Path | Request | Response | Capability | Purpose |
+|---|---|---|---|---|---|
+| `POST` | `/tenants/provision` | `TenantProvisionRequest` | `TenantProvisionResult` | `tenant:provision` | Create an isolated tenant (tenant row + signed license + Langfuse project + bootstrap admin), activate the customer |
+| `POST` | `/tenants/{id}/suspend` | `{suspend?, reason?}` | `204` | `tenant:offboard` | Pause/resume a tenant (`tenants.is_active`) without destroying data |
+| `GET` | `/tenants/{id}/export` | — | `TenantExport` | `tenant:offboard` | Full data export handed to the client (152-FZ/GDPR) |
+| `POST` | `/tenants/{id}/offboard` | `TenantOffboardRequest` | `TenantOffboardResult` | `tenant:offboard` | Suspend → export → juridical hard-delete (DB) → purge S3/Langfuse; churn the customer only when it has no remaining active installation (`1 customer : N tenants`) |
+| `POST` | `/tenants/{id}/backup` | — | `TenantBackupResult` | `tenant:backup` | On-demand DB-only tenant backup via the backup backend |
+| `POST` | `/tenants/restore` | `TenantRestoreRequest` | `TenantRestoreResult` | `tenant:backup` | Restore a tenant's DB rows from a backup (refuses to clobber a live tenant unless `overwrite=true`) |
+
+**Notes:**
+- **Hard-delete is application-layer**, not DB `ON DELETE CASCADE`: rows are deleted children-first in a deterministic FK-safe order, which is portable across SQLite/Postgres and yields a precise deletion receipt. The surviving `backoffice_audit_log` entry is that receipt.
+- **Backup/restore is DB-scoped**: it round-trips tenant rows (incl. `source_uri` strings) but does **not** re-create S3 objects or the Langfuse project. Object-storage/observability restore and a scheduled/PITR backup path are out of the current scope (ports exist; see `lifecycle.py`).
+- The external effects (`LangfuseProvisioner`, `StoragePurger`, `TenantBackupBackend`) are injectable ports; the default `TenantBackupBackend` is in-memory (tests/dev). Real adapters (Langfuse Org API / boto3 / Supabase PITR) wire in without touching core logic.
 
 ---
 

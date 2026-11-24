@@ -1,0 +1,12 @@
+{
+  "p95_ms": {
+    "retrieval": 180.0,
+    "generation_ttft": 900.0,
+    "ingestion": 2500.0
+  },
+  "throughput_rps": {
+    "retrieval": 40.0,
+    "generation_ttft": 12.0,
+    "ingestion": 5.0
+  }
+}

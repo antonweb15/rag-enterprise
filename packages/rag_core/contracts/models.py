@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Annotated, Any, Generic, Literal, TypeVar
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from rag_core.contracts.enums import (
     AccessLevel,
@@ -798,3 +798,109 @@ class VendorDashboard(CoreModel):
     licenses_active: int = 0
     licenses_revoked: int = 0
     activation_codes_pending: int = 0
+
+
+# --- SaaS tenant lifecycle (Stage N; core/vendor_backoffice.md, IMPLEMENTATION_PLAN.md §N) ---
+class TenantProvisionRequest(CoreModel):
+    """Atomic provisioning of a new SaaS tenant for an existing customer.
+
+    Creates the tenant row, issues a signed license, provisions the Langfuse project and
+    bootstraps the tenant admin user - all in a single transaction (IMPLEMENTATION_PLAN.md §N).
+    """
+
+    customer_id: UUID
+    slug: str
+    name: str
+    admin_email: str
+    admin_password: str
+    plan: LicensePlan = LicensePlan.STANDARD
+    mode: LicenseMode = LicenseMode.ONLINE_SUBSCRIPTION
+    max_documents: int = 1000
+    max_users: int = 10
+    expires_at: datetime | None = None
+    features: list[LicenseFeature] = Field(default_factory=lambda: list(DEFAULT_LICENSE_FEATURES))
+    storage_type: str = "s3"
+    s3_bucket: str | None = None
+    allowed_origins: list[str] = Field(default_factory=list)
+
+    @field_validator("admin_email")
+    @classmethod
+    def _validate_admin_email(cls, value: str) -> str:
+        # Reject an obviously malformed admin email at the boundary (no email-validator dep).
+        candidate = value.strip()
+        if "@" not in candidate or candidate.startswith("@") or candidate.endswith("@"):
+            raise ValueError("admin_email must be a valid email address")
+        return candidate
+
+    @field_validator("admin_password")
+    @classmethod
+    def _validate_admin_password(cls, value: str) -> str:
+        # Enforce a minimal password policy up front instead of failing late in hash_password.
+        if len(value) < 12:
+            raise ValueError("admin_password must be at least 12 characters long")
+        return value
+
+
+class TenantProvisionResult(CoreModel):
+    """Outcome of a successful tenant provisioning."""
+
+    tenant_id: UUID
+    customer_id: UUID
+    license_id: UUID
+    admin_user_id: UUID
+    slug: str
+    s3_prefix: str
+    observability: ObservabilityConfig | None = None
+
+
+class TenantExport(CoreModel):
+    """Full export of a tenant's data handed to the client before legal deletion (152-FZ/GDPR)."""
+
+    tenant_id: UUID
+    slug: str
+    exported_at: datetime
+    # Table name -> list of serialized rows (UUID/datetime/bytes are tagged for round-trip).
+    data: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    document_count: int = 0
+
+
+class TenantOffboardRequest(CoreModel):
+    """Request to offboard (terminate) a tenant: suspend -> export -> legal hard-delete."""
+
+    tenant_id: UUID
+    reason: str
+    export_data: bool = True
+
+
+class TenantOffboardResult(CoreModel):
+    """Outcome of an offboarding: a receipt proving no remnants are left behind."""
+
+    tenant_id: UUID
+    export: TenantExport | None = None
+    deleted_documents: int = 0
+    storage_purged: bool = False
+    observability_deprovisioned: bool = False
+
+
+class TenantBackupResult(CoreModel):
+    """Reference to a stored tenant backup (Supabase PITR / pg_dump analogue)."""
+
+    tenant_id: UUID
+    backup_ref: str
+    created_at: datetime
+    document_count: int = 0
+
+
+class TenantRestoreRequest(CoreModel):
+    """Request to restore a tenant from a previously created backup."""
+
+    backup_ref: str
+    # Refuse to clobber a still-existing tenant unless the caller opts in explicitly.
+    overwrite: bool = False
+
+
+class TenantRestoreResult(CoreModel):
+    """Outcome of a restore: the restored tenant and the number of restored documents."""
+
+    tenant_id: UUID
+    restored_documents: int = 0

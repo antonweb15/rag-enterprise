@@ -43,6 +43,10 @@ class BackofficeCapability(StrEnum):
     IMPERSONATE = "impersonate"
     AUDIT_VIEW = "audit:view"
     USER_MANAGE = "user:manage"
+    # SaaS tenant lifecycle (Stage N): provisioning / offboarding / backup-restore.
+    TENANT_PROVISION = "tenant:provision"
+    TENANT_OFFBOARD = "tenant:offboard"
+    TENANT_BACKUP = "tenant:backup"
 
 
 # The capability matrix from core/vendor_backoffice.md §3. ``superadmin`` holds every capability.

@@ -46,6 +46,9 @@ from rag_core.contracts.models import (
     LicenseIssueRequest,
     LicenseRevokeRequest,
     LicenseUpgradeRequest,
+    TenantOffboardRequest,
+    TenantProvisionRequest,
+    TenantRestoreRequest,
 )
 from rag_core.contracts.settings import Settings
 from rag_core.licensing.tokens import TokenSigner
@@ -442,6 +445,66 @@ class BackofficeAPIApp:
                 user_agent=user_agent,
             )
             await self._no_content(send)
+            return
+
+        # --- SaaS tenant lifecycle (Stage N: provisioning / offboarding / backup-restore) ---
+        if sub == "/tenants/provision" and method == "POST":
+            user = self._guard(method, headers, BackofficeCapability.TENANT_PROVISION)
+            body = await self._read_json(receive)
+            prov_req = TenantProvisionRequest.model_validate(body)
+            result = self.service.provision_tenant(
+                prov_req, actor_user_id=user.id, actor_email=user.email
+            )
+            await self._json(send, result.model_dump(mode="json"), 201)
+            return
+        if sub == "/tenants/restore" and method == "POST":
+            user = self._guard(method, headers, BackofficeCapability.TENANT_BACKUP)
+            body = await self._read_json(receive)
+            restore_req = TenantRestoreRequest.model_validate(body)
+            restored = self.service.restore_tenant(
+                restore_req.backup_ref,
+                overwrite=restore_req.overwrite,
+                actor_user_id=user.id,
+                actor_email=user.email,
+            )
+            await self._json(send, restored.model_dump(mode="json"), 201)
+            return
+        if sub.startswith("/tenants/") and sub.endswith("/suspend") and method == "POST":
+            user = self._guard(method, headers, BackofficeCapability.TENANT_OFFBOARD)
+            tenant_id = UUID(sub.split("/")[2])
+            body = await self._read_json(receive)
+            self.service.suspend_tenant(
+                tenant_id,
+                suspend=bool(body.get("suspend", True)),
+                reason=body.get("reason"),
+                actor_user_id=user.id,
+                actor_email=user.email,
+            )
+            await self._no_content(send)
+            return
+        if sub.startswith("/tenants/") and sub.endswith("/offboard") and method == "POST":
+            user = self._guard(method, headers, BackofficeCapability.TENANT_OFFBOARD)
+            tenant_id = UUID(sub.split("/")[2])
+            body = await self._read_json(receive)
+            off_req = TenantOffboardRequest.model_validate({**body, "tenant_id": str(tenant_id)})
+            off_result = self.service.offboard_tenant(
+                off_req, actor_user_id=user.id, actor_email=user.email
+            )
+            await self._json(send, off_result.model_dump(mode="json"))
+            return
+        if sub.startswith("/tenants/") and sub.endswith("/export") and method == "GET":
+            self._guard(method, headers, BackofficeCapability.TENANT_OFFBOARD)
+            tenant_id = UUID(sub.split("/")[2])
+            export = self.service.export_tenant(tenant_id)
+            await self._json(send, export.model_dump(mode="json"))
+            return
+        if sub.startswith("/tenants/") and sub.endswith("/backup") and method == "POST":
+            user = self._guard(method, headers, BackofficeCapability.TENANT_BACKUP)
+            tenant_id = UUID(sub.split("/")[2])
+            backup = self.service.backup_tenant(
+                tenant_id, actor_user_id=user.id, actor_email=user.email
+            )
+            await self._json(send, backup.model_dump(mode="json"), 201)
             return
 
         # --- audit log (§5 /audit-log?actor=&action=&tenant=&page=) ---

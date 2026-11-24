@@ -82,6 +82,13 @@ jobs:
             --tenant-id "${{ vars.EVAL_TENANT_ID }}" --user-id "${{ vars.EVAL_USER_ID }}" \
             --json-report eval-report.json
 
+      # Stage O load/SLO gate (IMPLEMENTATION_PLAN.md Stage O, SPECIFICATION.md §1.2).
+      # The full HTTP load run is a NIGHTLY/release job (.github/workflows/load.yml); here we only
+      # run the offline self-check so the gate plumbing (driver -> percentiles -> SLO -> baseline)
+      # is validated on every PR without needing a live stack.
+      - name: Load/SLO gate - offline self-check (smoke)
+        run: python -m tests.load_slo --self-check
+
       - name: Upload evaluation reports
         if: always()
         uses: actions/upload-artifact@v4

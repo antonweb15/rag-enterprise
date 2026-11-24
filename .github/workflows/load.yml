@@ -1,0 +1,86 @@
+name: Load & SLO (nightly)
+
+# Stage O (IMPLEMENTATION_PLAN.md §O, SPECIFICATION.md §1.2): the load run is a NIGHTLY / release
+# gate, NOT a per-PR check. It drives a deployed stack over HTTP and blocks (an alert) when the
+# measured P95 retrieval / P95 TTFT / ingest throughput regress below the committed baseline.
+on:
+  schedule:
+    # 02:30 UTC every day.
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Base URL of the live API to load-test"
+        required: false
+        default: ""
+
+concurrency:
+  group: load-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  load-slo:
+    name: Load generation + SLO verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dev tooling + load extra
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,load]"
+
+      # Always validate the gate plumbing first (offline, no infra).
+      - name: Load/SLO gate - offline self-check (smoke)
+        run: python -m tests.load_slo --self-check
+
+      # The LIVE load run executes only when a target is configured (workflow_dispatch input or the
+      # repo variable LOAD_TARGET). It generates traffic with locust and verifies the resulting SLO
+      # against the committed baseline, failing the job (alert) on a regression.
+      - name: Resolve target
+        id: target
+        run: |
+          TARGET="${{ github.event.inputs.target }}"
+          if [ -z "$TARGET" ]; then TARGET="${{ vars.LOAD_TARGET }}"; fi
+          echo "value=$TARGET" >> "$GITHUB_OUTPUT"
+
+      - name: Locust load run (headless)
+        if: steps.target.outputs.value != ''
+        env:
+          LOAD_TENANT_ID: ${{ vars.LOAD_TENANT_ID }}
+          LOAD_AUTH_TOKEN: ${{ secrets.LOAD_AUTH_TOKEN }}
+        run: |
+          locust -f scripts/locustfile.py --headless \
+            --host "${{ steps.target.outputs.value }}" \
+            -u 50 -r 10 -t 5m --only-summary --csv=load_report \
+            --tenant-id "$LOAD_TENANT_ID" --auth-token "$LOAD_AUTH_TOKEN"
+
+      - name: SLO gate against committed baseline (blocks on regression)
+        if: steps.target.outputs.value != ''
+        env:
+          LOAD_TENANT_ID: ${{ vars.LOAD_TENANT_ID }}
+          LOAD_AUTH_TOKEN: ${{ secrets.LOAD_AUTH_TOKEN }}
+        run: |
+          python -m tests.load_slo \
+            --target "${{ steps.target.outputs.value }}" \
+            --tenant-id "$LOAD_TENANT_ID" --auth-token "$LOAD_AUTH_TOKEN" \
+            --json > load-slo-report.json
+          cat load-slo-report.json
+
+      - name: Upload load reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-reports
+          path: |
+            load_report*.csv
+            load-slo-report.json
+          if-no-files-found: ignore

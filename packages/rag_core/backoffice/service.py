@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, insert, or_, select, update
+from sqlalchemy import delete, func, insert, or_, select, update
 from sqlalchemy.orm import Session
 
 from rag_core.admin.auth import (
@@ -28,6 +28,14 @@ from rag_core.admin.auth import (
     hash_password,
     verify_password,
     verify_totp_code,
+)
+from rag_core.backoffice.lifecycle import (
+    InMemoryTenantBackupBackend,
+    LangfuseProvisioner,
+    StoragePurger,
+    TenantBackupBackend,
+    deserialize_row,
+    serialize_row,
 )
 from rag_core.backoffice.schema import (
     activation_codes_table,
@@ -59,8 +67,16 @@ from rag_core.contracts.models import (
     LicenseRevokeRequest,
     LicenseStatus,
     LicenseUpgradeRequest,
+    ObservabilityConfig,
     Order,
     Page,
+    TenantBackupResult,
+    TenantExport,
+    TenantOffboardRequest,
+    TenantOffboardResult,
+    TenantProvisionRequest,
+    TenantProvisionResult,
+    TenantRestoreResult,
     TwoFactorSetupResponse,
     VendorDashboard,
 )
@@ -73,6 +89,30 @@ logger = logging.getLogger(__name__)
 SessionFactory = Callable[[], Session]
 
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+# Tenant-scoped ORM models in FK-safe RESTORE order (parents first). Snapshot/export iterate in
+# this order; the hard-delete iterates in reverse (children first) so there are no dangling rows -
+# we do NOT rely on DB-level ``ON DELETE CASCADE`` (it is a no-op on SQLite without PRAGMA, and we
+# want a deterministic, portable legal-deletion receipt). ``Message`` has no ``tenant_id`` column
+# and is scoped through its ``conversation_id`` (handled specially below).
+_TENANT_RESTORE_ORDER: tuple[Any, ...] = (
+    orm.Tenant,
+    orm.License,
+    orm.AdminUser,
+    orm.User,
+    orm.Group,
+    orm.Collection,
+    orm.Document,
+    orm.UserGroup,
+    orm.DocumentCollection,
+    orm.DocumentAcl,
+    orm.ParentChunk,
+    orm.ChildChunk,
+    orm.Conversation,
+    orm.Message,
+    orm.StorageCredential,
+    orm.AuditLog,
+)
 
 
 def _utcnow() -> datetime:
@@ -100,6 +140,9 @@ class BackofficeService:
         signer: TokenSigner | None = None,
         clock: Callable[[], datetime] = _utcnow,
         crl_publisher: Callable[[UUID, str], None] | None = None,
+        langfuse_provisioner: LangfuseProvisioner | None = None,
+        storage_purger: StoragePurger | None = None,
+        backup_backend: TenantBackupBackend | None = None,
     ) -> None:
         self._session_factory = session_factory
         self.settings = settings or Settings()
@@ -110,6 +153,11 @@ class BackofficeService:
         # the Stage K ``BaseLicenseServer.signed_crl()`` producer, offline validators stop trusting
         # the revoked token at the next CRL refresh.
         self._crl_publisher = crl_publisher
+        # Stage N tenant-lifecycle side-effect ports (see rag_core.backoffice.lifecycle).
+        # All optional: without them the DB lifecycle still runs, external effects are skipped.
+        self._langfuse_provisioner = langfuse_provisioner
+        self._storage_purger = storage_purger
+        self._backup_backend: TenantBackupBackend = backup_backend or InMemoryTenantBackupBackend()
 
     # --- audit ---------------------------------------------------------------
     def _record_audit(
@@ -968,6 +1016,30 @@ class BackofficeService:
             )
             return [{"id": str(t.id), "slug": t.slug, "name": t.name} for t in tenants]
 
+    def _customer_has_active_installations(self, session: Session, customer_id: UUID) -> bool:
+        """True if the customer still owns at least one existing, active tenant installation.
+
+        Used to decide churn on offboarding: with the ``1 customer : N tenants`` model a customer
+        is churned only once their LAST active installation is gone (deepseek-criticism Stage N 2).
+        """
+        tenant_ids = {
+            tid
+            for tid in session.execute(
+                select(orm.License.tenant_id).where(orm.License.customer_id == customer_id)
+            )
+            .scalars()
+            .all()
+            if tid is not None
+        }
+        if not tenant_ids:
+            return False
+        active = session.execute(
+            select(func.count())
+            .select_from(orm.Tenant)
+            .where(orm.Tenant.id.in_(tenant_ids), orm.Tenant.is_active.is_(True))
+        ).scalar_one()
+        return int(active) > 0
+
     def list_audit_log(
         self,
         page: int = 1,
@@ -1048,3 +1120,464 @@ class BackofficeService:
                 licenses_revoked=int(licenses_revoked),
                 activation_codes_pending=int(codes_pending),
             )
+
+    # --- SaaS tenant lifecycle (Stage N, IMPLEMENTATION_PLAN.md §N) ----------
+    def provision_tenant(
+        self,
+        request: TenantProvisionRequest,
+        *,
+        actor_user_id: UUID | None = None,
+        actor_email: str | None = None,
+    ) -> TenantProvisionResult:
+        """Provisions an isolated SaaS tenant for an existing customer (commit-then-effects).
+
+        The primary Postgres state (``tenants`` row RLS-isolated by ``tenant_id``, a signed
+        license, the bootstrapped tenant admin and the customer->ACTIVE flip) is written in ONE
+        DB transaction and COMMITTED first. Only then is the external Langfuse project provisioned
+        - a dual-write hazard otherwise (a committed DB vs. an un-rolled-back external project).
+        If the Langfuse hook fails, the already-committed tenant is COMPENSATED (hard-deleted) so
+        the operation still has all-or-nothing semantics from the caller's point of view.
+        """
+        signer = self._require_signer()
+        now = self._clock()
+        tenant_id = uuid4()
+        license_id = uuid4()
+        admin_user_id = uuid4()
+        s3_prefix = f"{tenant_id}/"
+        payload = LicensePayload(
+            license_id=str(license_id),
+            client_id=str(tenant_id),
+            plan=request.plan,
+            mode=request.mode,
+            issued_at=now,
+            expires_at=request.expires_at,
+            max_documents=request.max_documents,
+            max_users=request.max_users,
+            hardware_id=None,
+            features=list(request.features),
+        )
+        token = signer.sign(payload)
+        with self._session_factory() as session, session.begin():
+            customer = session.execute(
+                select(customers_table).where(customers_table.c.id == request.customer_id)
+            ).first()
+            if customer is None:
+                raise BackofficeError(f"Customer {request.customer_id} not found")
+            slug_taken = session.execute(
+                select(orm.Tenant.id).where(orm.Tenant.slug == request.slug)
+            ).first()
+            if slug_taken is not None:
+                raise BackofficeError(f"Tenant slug '{request.slug}' already exists")
+            prior_customer_status = CustomerStatus(customer.status)
+            session.add(
+                orm.Tenant(
+                    id=tenant_id,
+                    slug=request.slug,
+                    name=request.name,
+                    is_active=True,
+                    storage_type=request.storage_type,
+                    s3_bucket=request.s3_bucket,
+                    s3_prefix=s3_prefix,
+                    allowed_origins=list(request.allowed_origins),
+                    config={},
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                orm.License(
+                    id=license_id,
+                    tenant_id=tenant_id,
+                    license_key=token,
+                    plan=str(request.plan),
+                    mode=str(request.mode),
+                    issued_at=now,
+                    expires_at=request.expires_at,
+                    max_documents=request.max_documents,
+                    max_users=request.max_users,
+                    is_revoked=False,
+                    features=[str(f) for f in request.features],
+                    issued_by=actor_user_id,
+                    customer_id=request.customer_id,
+                    created_at=now,
+                )
+            )
+            session.add(
+                orm.AdminUser(
+                    id=admin_user_id,
+                    tenant_id=tenant_id,
+                    email=request.admin_email,
+                    hashed_password=hash_password(request.admin_password),
+                    role="admin",
+                    is_active=True,
+                    is_superuser=True,
+                    is_verified=True,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            # Provisioning activates the customer (DoD: lifecycle reflects in customer status).
+            self._set_customer_status(session, request.customer_id, CustomerStatus.ACTIVE)
+            self._record_audit(
+                session,
+                "tenant.provision",
+                actor_user_id=actor_user_id,
+                actor_email=actor_email,
+                impersonated_tenant_id=tenant_id,
+                object_type="tenant",
+                object_id=str(tenant_id),
+                payload={
+                    "customer_id": str(request.customer_id),
+                    "slug": request.slug,
+                    "license_id": str(license_id),
+                },
+            )
+        # DB state is now committed. Run the external Langfuse side-effect AFTER commit and
+        # compensate (hard-delete the committed tenant) if it fails, so the caller still observes
+        # all-or-nothing semantics without leaving an orphaned Langfuse project behind.
+        obs: ObservabilityConfig | None = None
+        if self._langfuse_provisioner is not None:
+            try:
+                obs = self._langfuse_provisioner.provision(tenant_id, request.slug, request.name)
+            except Exception:
+                # Compensation: undo the committed DB state so the caller sees all-or-nothing
+                # (hard-delete the tenant AND restore the customer's prior status). The rollback
+                # itself is audited, so the audit trail never shows a bare "tenant.provision"
+                # whose tenant was later compensated away.
+                with self._session_factory() as session, session.begin():
+                    self._hard_delete_tenant(session, tenant_id)
+                    self._set_customer_status(session, request.customer_id, prior_customer_status)
+                    self._record_audit(
+                        session,
+                        "tenant.provision.compensated",
+                        actor_user_id=actor_user_id,
+                        actor_email=actor_email,
+                        impersonated_tenant_id=tenant_id,
+                        object_type="tenant",
+                        object_id=str(tenant_id),
+                        payload={"customer_id": str(request.customer_id)},
+                    )
+                raise
+            with self._session_factory() as session, session.begin():
+                tenant = session.get(orm.Tenant, tenant_id)
+                if tenant is not None:
+                    tenant.config = {"observability": obs.model_dump(mode="json")}
+                    tenant.updated_at = self._clock()
+        return TenantProvisionResult(
+            tenant_id=tenant_id,
+            customer_id=request.customer_id,
+            license_id=license_id,
+            admin_user_id=admin_user_id,
+            slug=request.slug,
+            s3_prefix=s3_prefix,
+            observability=obs,
+        )
+
+    def _snapshot_tenant(
+        self, session: Session, tenant_id: UUID
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Serialises every tenant-scoped row into a JSON-round-trippable snapshot."""
+        snapshot: dict[str, list[dict[str, Any]]] = {}
+        for model in _TENANT_RESTORE_ORDER:
+            rows: list[Any]
+            if model is orm.Message:
+                conv_ids = (
+                    session.execute(
+                        select(orm.Conversation.id).where(orm.Conversation.tenant_id == tenant_id)
+                    )
+                    .scalars()
+                    .all()
+                )
+                rows = (
+                    list(
+                        session.execute(
+                            select(orm.Message).where(orm.Message.conversation_id.in_(conv_ids))
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    if conv_ids
+                    else []
+                )
+            elif model is orm.Tenant:
+                rows = list(
+                    session.execute(select(orm.Tenant).where(orm.Tenant.id == tenant_id))
+                    .scalars()
+                    .all()
+                )
+            else:
+                rows = list(
+                    session.execute(select(model).where(model.tenant_id == tenant_id))
+                    .scalars()
+                    .all()
+                )
+            snapshot[model.__tablename__] = [serialize_row(r) for r in rows]
+        return snapshot
+
+    def _hard_delete_tenant(self, session: Session, tenant_id: UUID) -> None:
+        """Deterministically deletes all tenant-scoped rows (children first), then the tenant."""
+        conv_subq = select(orm.Conversation.id).where(orm.Conversation.tenant_id == tenant_id)
+        for model in reversed(_TENANT_RESTORE_ORDER):
+            if model is orm.Message:
+                session.execute(
+                    delete(orm.Message).where(orm.Message.conversation_id.in_(conv_subq))
+                )
+            elif model is orm.Tenant:
+                session.execute(delete(orm.Tenant).where(orm.Tenant.id == tenant_id))
+            else:
+                session.execute(delete(model).where(model.tenant_id == tenant_id))
+
+    def _restore_snapshot(
+        self, session: Session, snapshot: dict[str, list[dict[str, Any]]]
+    ) -> None:
+        """Re-inserts a snapshot in FK-safe order (parents first)."""
+        for model in _TENANT_RESTORE_ORDER:
+            rows = snapshot.get(model.__tablename__, [])
+            for row in rows:
+                session.add(model(**deserialize_row(row)))
+            session.flush()
+
+    def suspend_tenant(
+        self,
+        tenant_id: UUID,
+        *,
+        suspend: bool = True,
+        reason: str | None = None,
+        actor_user_id: UUID | None = None,
+        actor_email: str | None = None,
+    ) -> None:
+        """Pauses (or resumes) a tenant WITHOUT terminating it.
+
+        A standalone, independently-audited suspend step (deepseek-criticism Stage N 8): toggles
+        ``tenants.is_active`` so no new traffic is served, but keeps all data/objects intact.
+        """
+        with self._session_factory() as session, session.begin():
+            tenant = session.get(orm.Tenant, tenant_id)
+            if tenant is None:
+                raise BackofficeError(f"Tenant {tenant_id} not found")
+            tenant.is_active = not suspend
+            tenant.updated_at = self._clock()
+            self._record_audit(
+                session,
+                "tenant.suspend" if suspend else "tenant.resume",
+                actor_user_id=actor_user_id,
+                actor_email=actor_email,
+                impersonated_tenant_id=tenant_id,
+                object_type="tenant",
+                object_id=str(tenant_id),
+                payload={"reason": reason} if reason else None,
+            )
+
+    def export_tenant(self, tenant_id: UUID) -> TenantExport:
+        """Builds a full data export of a tenant (handed to the client before legal deletion)."""
+        with self._session_factory() as session:
+            tenant = session.get(orm.Tenant, tenant_id)
+            if tenant is None:
+                raise BackofficeError(f"Tenant {tenant_id} not found")
+            snapshot = self._snapshot_tenant(session, tenant_id)
+            return TenantExport(
+                tenant_id=tenant_id,
+                slug=tenant.slug,
+                exported_at=self._clock(),
+                data=snapshot,
+                document_count=len(snapshot.get(orm.Document.__tablename__, [])),
+            )
+
+    def offboard_tenant(
+        self,
+        request: TenantOffboardRequest,
+        *,
+        actor_user_id: UUID | None = None,
+        actor_email: str | None = None,
+    ) -> TenantOffboardResult:
+        """Offboards a tenant: suspend -> export -> legal hard-delete (DB + S3 + Langfuse).
+
+        Leaves NO remnants in the primary contour; the audit entry survives in the SEPARATE
+        ``backoffice_audit_log`` table (152-FZ/GDPR deletion receipt, `vendor_backoffice.md` §6).
+        """
+        if not request.reason or not request.reason.strip():
+            raise BackofficeError("Offboarding requires a non-empty reason (legal audit trail)")
+        export: TenantExport | None = None
+        s3_bucket: str | None = None
+        s3_prefix: str | None = None
+        with self._session_factory() as session, session.begin():
+            tenant = session.get(orm.Tenant, request.tenant_id)
+            if tenant is None:
+                raise BackofficeError(f"Tenant {request.tenant_id} not found")
+            slug = tenant.slug
+            s3_bucket = tenant.s3_bucket
+            s3_prefix = tenant.s3_prefix
+            # 1. Suspend immediately (so no new traffic is served during offboarding).
+            tenant.is_active = False
+            snapshot = self._snapshot_tenant(session, request.tenant_id)
+            deleted_documents = len(snapshot.get(orm.Document.__tablename__, []))
+            # 2. Export the data for the client (optional).
+            if request.export_data:
+                export = TenantExport(
+                    tenant_id=request.tenant_id,
+                    slug=slug,
+                    exported_at=self._clock(),
+                    data=snapshot,
+                    document_count=deleted_documents,
+                )
+            customer_id = (
+                session.execute(
+                    select(orm.License.customer_id).where(
+                        orm.License.tenant_id == request.tenant_id
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            # 3. Legal hard-delete with cascade across all tenant-scoped tables.
+            self._hard_delete_tenant(session, request.tenant_id)
+            # Model is 1 customer : N tenants - churn the customer ONLY when this was their last
+            # remaining active installation, otherwise terminating one tenant would wrongly churn
+            # a still-paying customer (deepseek-criticism Stage N 2).
+            customer_churned = False
+            if customer_id is not None and not self._customer_has_active_installations(
+                session, customer_id
+            ):
+                self._set_customer_status(session, customer_id, CustomerStatus.CHURNED)
+                customer_churned = True
+            self._record_audit(
+                session,
+                "tenant.offboard",
+                actor_user_id=actor_user_id,
+                actor_email=actor_email,
+                impersonated_tenant_id=request.tenant_id,
+                object_type="tenant",
+                object_id=str(request.tenant_id),
+                payload={
+                    "reason": request.reason,
+                    "slug": slug,
+                    "deleted_documents": deleted_documents,
+                    "customer_churned": customer_churned,
+                    "exported": request.export_data,
+                },
+            )
+        # DB (incl. the surviving legal-deletion audit receipt) is now committed. Only then do we
+        # run the irreversible external purge, so a DB-commit failure can never leave a live tenant
+        # pointing at already-deleted objects (deepseek-criticism Stage N 1).
+        storage_purged = False
+        obs_deprovisioned = False
+        purge_failures: list[str] = []
+        if self._storage_purger is not None:
+            try:
+                self._storage_purger.purge_tenant_prefix(request.tenant_id, s3_bucket, s3_prefix)
+                storage_purged = True
+            except Exception as exc:  # noqa: BLE001
+                purge_failures.append(f"storage: {exc}")
+        if self._langfuse_provisioner is not None:
+            try:
+                self._langfuse_provisioner.deprovision(request.tenant_id)
+                obs_deprovisioned = True
+            except Exception as exc:  # noqa: BLE001
+                purge_failures.append(f"langfuse: {exc}")
+        if purge_failures:
+            # The DB deletion (incl. the surviving receipt) is already committed and irreversible;
+            # record the incomplete external purge durably so a retry job / operator can finish it
+            # instead of silently leaving S3/Langfuse remnants behind (criticism Stage N 1).
+            with self._session_factory() as session, session.begin():
+                self._record_audit(
+                    session,
+                    "tenant.offboard.purge_failed",
+                    actor_user_id=actor_user_id,
+                    actor_email=actor_email,
+                    impersonated_tenant_id=request.tenant_id,
+                    object_type="tenant",
+                    object_id=str(request.tenant_id),
+                    payload={"failures": purge_failures},
+                )
+            logger.error(
+                "Tenant %s hard-deleted but external purge incomplete: %s",
+                request.tenant_id,
+                "; ".join(purge_failures),
+            )
+        return TenantOffboardResult(
+            tenant_id=request.tenant_id,
+            export=export,
+            deleted_documents=deleted_documents,
+            storage_purged=storage_purged,
+            observability_deprovisioned=obs_deprovisioned,
+        )
+
+    def backup_tenant(
+        self,
+        tenant_id: UUID,
+        *,
+        actor_user_id: UUID | None = None,
+        actor_email: str | None = None,
+    ) -> TenantBackupResult:
+        """Creates a verifiable backup of a tenant via the injected backup backend.
+
+        The snapshot read, the backend write and the ``tenant.backup`` audit all happen inside a
+        single session so a durable backup can never be left without its audit record
+        (deepseek-criticism Stage N 10).
+        """
+        now = self._clock()
+        with self._session_factory() as session, session.begin():
+            tenant = session.get(orm.Tenant, tenant_id)
+            if tenant is None:
+                raise BackofficeError(f"Tenant {tenant_id} not found")
+            snapshot = self._snapshot_tenant(session, tenant_id)
+            document_count = len(snapshot.get(orm.Document.__tablename__, []))
+            backup_ref = self._backup_backend.save(tenant_id, snapshot)
+            self._record_audit(
+                session,
+                "tenant.backup",
+                actor_user_id=actor_user_id,
+                actor_email=actor_email,
+                impersonated_tenant_id=tenant_id,
+                object_type="tenant",
+                object_id=str(tenant_id),
+                payload={"backup_ref": backup_ref, "document_count": document_count},
+            )
+        return TenantBackupResult(
+            tenant_id=tenant_id,
+            backup_ref=backup_ref,
+            created_at=now,
+            document_count=document_count,
+        )
+
+    def restore_tenant(
+        self,
+        backup_ref: str,
+        *,
+        overwrite: bool = False,
+        actor_user_id: UUID | None = None,
+        actor_email: str | None = None,
+    ) -> TenantRestoreResult:
+        """Restores a tenant from a backup, re-establishing the tenant's DB rows.
+
+        Restoring over a tenant that still exists is REFUSED unless ``overwrite=True`` is passed
+        explicitly, so an older backup can never silently destroy newer live data
+        (deepseek-criticism Stage N 12). Scope is DB-only: ``source_uri`` strings are restored but
+        S3 objects / the Langfuse project are NOT re-created (see ``core/vendor_backoffice.md`` §5).
+        """
+        snapshot = self._backup_backend.load(backup_ref)
+        tenant_rows = snapshot.get(orm.Tenant.__tablename__, [])
+        if not tenant_rows:
+            raise BackofficeError(f"Backup {backup_ref} contains no tenant row")
+        tenant_id = deserialize_row(tenant_rows[0])["id"]
+        with self._session_factory() as session, session.begin():
+            if session.get(orm.Tenant, tenant_id) is not None:
+                if not overwrite:
+                    raise BackofficeError(
+                        f"Tenant {tenant_id} already exists; pass overwrite=True to replace it"
+                    )
+                # Explicit overwrite: wipe the existing tenant before re-inserting the backup.
+                self._hard_delete_tenant(session, tenant_id)
+            self._restore_snapshot(session, snapshot)
+            restored_documents = len(snapshot.get(orm.Document.__tablename__, []))
+            self._record_audit(
+                session,
+                "tenant.restore",
+                actor_user_id=actor_user_id,
+                actor_email=actor_email,
+                impersonated_tenant_id=tenant_id,
+                object_type="tenant",
+                object_id=str(tenant_id),
+                payload={"backup_ref": backup_ref, "restored_documents": restored_documents},
+            )
+        return TenantRestoreResult(tenant_id=tenant_id, restored_documents=restored_documents)
