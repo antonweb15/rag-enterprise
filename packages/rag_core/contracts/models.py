@@ -21,6 +21,7 @@ from rag_core.contracts.enums import (
     AclPermission,
     ActivationCodeStatus,
     AdminRole,
+    BackofficeRole,
     ChannelEventType,
     ChannelType,
     CustomerStatus,
@@ -706,3 +707,94 @@ class ImpersonationGrant(CoreModel):
     target_tenant_id: UUID
     reason: str
     expires_at: datetime  # a short-lived scope (minutes/hours)
+
+
+# --- Backoffice user model + request/response contracts (core/vendor_backoffice.md §3, §5) ---
+class BackofficeUserRead(CoreModel):
+    """Vendor staff account (SEPARATE from the tenant AdminUser; never mixed)."""
+
+    id: UUID
+    email: str
+    role: BackofficeRole = BackofficeRole.SUPPORT
+    is_active: bool = True
+    totp_enabled: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+
+class BackofficeUserCreate(CoreModel):
+    email: str
+    password: str
+    role: BackofficeRole = BackofficeRole.SUPPORT
+
+
+class BackofficeLoginRequest(CoreModel):
+    email: str
+    password: str
+    totp_code: str | None = None
+
+
+class BackofficeLoginResponse(CoreModel):
+    user: BackofficeUserRead
+    csrf_token: str
+    message: str = "ok"
+
+
+class CustomerCreateRequest(CoreModel):
+    legal_name: str
+    contact_email: str
+    display_name: str | None = None
+    inn: str | None = None
+    contact_phone: str | None = None
+    contract_number: str | None = None
+    status: CustomerStatus = CustomerStatus.TRIAL
+
+
+class ActivationCodeCreateRequest(CoreModel):
+    customer_id: UUID
+    plan: LicensePlan = LicensePlan.STANDARD
+
+
+class Order(CoreModel):
+    """Minimal order/billing skeleton linked to an external provider (Stripe/Paddle/manual)."""
+
+    id: UUID
+    customer_id: UUID
+    plan: LicensePlan
+    amount_minor: int | None = None
+    currency: str = "RUB"
+    status: str = "pending"
+    external_provider: str | None = None
+    external_ref: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class LicenseExtendRequest(CoreModel):
+    expires_at: datetime
+
+
+class LicenseUpgradeRequest(CoreModel):
+    plan: LicensePlan
+    max_documents: int | None = None
+    max_users: int | None = None
+    features: list[LicenseFeature] | None = None
+
+
+class ImpersonationRequest(CoreModel):
+    """Request body for a break-glass impersonation grant (the actor is taken from the session)."""
+
+    reason: str
+    ttl_seconds: int = 900  # short-lived scope, default 15 minutes
+
+
+class VendorDashboard(CoreModel):
+    """Cross-tenant vendor overview (see core/vendor_backoffice.md §5 /dashboard)."""
+
+    customers_total: int = 0
+    tenants_total: int = 0
+    boxes_total: int = 0
+    stale_boxes: int = 0  # installations with a silent heartbeat beyond the threshold
+    licenses_active: int = 0
+    licenses_revoked: int = 0
+    activation_codes_pending: int = 0

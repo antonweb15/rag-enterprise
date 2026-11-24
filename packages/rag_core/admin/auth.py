@@ -245,6 +245,12 @@ def verify_admin_session_jwt(token: str, secret: str) -> dict[str, Any]:
     except Exception as exc:
         raise AuthError(f"Malformed session payload: {exc}", status_code=401) from exc
 
+    # Contour isolation (core/vendor_backoffice.md): a vendor backoffice session token
+    # (ctx='backoffice') must NEVER be accepted by the tenant admin contour, even when both
+    # contours share the same HS256 signing secret. Legacy admin tokens carry no ctx claim.
+    if payload.get("ctx") == "backoffice":
+        raise AuthError("Not a tenant admin session token", status_code=401)
+
     now = time.time()
     if "exp" in payload and now > payload["exp"]:
         raise AuthError("Session token expired", status_code=401)
