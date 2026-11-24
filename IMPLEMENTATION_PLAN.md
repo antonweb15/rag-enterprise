@@ -450,6 +450,11 @@
 2. Для поставки коробок включите **GitHub Container Registry** (`ghcr.io/<org>/rag-core`),
    создайте токен с правами `write:packages`.
 3. Клиентам коробок выдайте **read-доступ** к приватному образу (deploy token / PAT).
+4. Для водяных знаков (Этап M, `core/licensing_and_distribution.md` §4a) заведите секрет
+   **`VENDOR_KEY`** (отдельный от `LICENSE_SIGNING_KEY`!) — релизный CI вычисляет из него
+   per-release/per-client отпечаток `HMAC-SHA256(VENDOR_KEY, license_id|client_id|build_id)` и
+   запекает его в образ (`RAG_BUILD_STAMP` → `build_stamp.json`). Без `VENDOR_KEY` образ собирается
+   **без** водяного знака (атрибуция утечки невозможна) — CI печатает предупреждение.
 
 ### 3.8. Для клиента коробки (`on_premise_box`) — инструкция «на той стороне»
 
@@ -489,6 +494,8 @@
 | `OLLAMA_BASE_URL` | локальный LLM | §3.4 | box |
 | `TELEGRAM_BOT_TOKEN` | Telegram-канал | §3.5 | опц. |
 | `LICENSE_SIGNING_KEY` | приватный Ed25519 (только сервер/HSM) | §3.6 | вендор |
+| `VENDOR_KEY` | секрет водяных знаков (HMAC build_stamp, Этап M); **отдельный** от `LICENSE_SIGNING_KEY` | §3.7 | вендор/CI |
+| `RELEASE_LICENSE_ID` / `RELEASE_CLIENT_ID` | координаты per-release/per-client отпечатка (опц.; по умолчанию = релиз/репозиторий) | §3.7 | вендор/CI |
 | `LICENSE_PUBLIC_KEY` | публичный Ed25519 (валидатор) | §3.6 | оба |
 | `LICENSE_CRL_URL` | список отзыва (online-проверка) | §3.6 | вендор |
 | `LICENSE_SIGNING_SERVICE_URL` | endpoint signing-сервиса | §3.6 | вендор |

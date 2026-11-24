@@ -1,0 +1,193 @@
+name: Release (Protected Box)
+
+# Stage M - Protected Box distribution (IMPLEMENTATION_PLAN.md Stage M,
+# core/eval_and_ops.md §4, core/licensing_and_distribution.md §2 / §4a).
+#
+# Triggered by a SemVer git tag `v*` (e.g. v1.4.0). Builds the closed image with the core
+# compiled to .so, scans it for CVEs (Trivy) and generates an SBOM (CycloneDX); the release is
+# BLOCKED on any CRITICAL vulnerability. The EXACT image that is scanned is the one pushed to the
+# private GHCR (single build, then `docker push` of the locally-loaded tags - no rebuild), and the
+# SBOM is attached to the GitHub Release.
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  release-box:
+    name: Build, Scan & Publish the protected Box image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # attach the SBOM to the GitHub Release
+      packages: write        # push to GHCR
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Sanity-check the protected-module inventory before the build (fails if a protected
+      # package/module is missing/renamed - keeps the Dockerfile and compile script in sync).
+      - name: Verify protected-core inventory
+        run: python scripts/compile_core.py --check
+
+      # The admin SPA is gitignored (apps/admin/dist) and the Dockerfile COPYs the prebuilt bundle,
+      # so we must build it here (mirrors ci.yml) - otherwise the Docker build aborts on a missing
+      # build context path (🔴2 of the Stage-M review).
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build the admin SPA (apps/admin/dist)
+        run: |
+          pnpm install --no-frozen-lockfile
+          pnpm -r build
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Per-build leak-attribution stamp (§4a): fingerprint = HMAC-SHA256(vendor_key,
+      # license_id|client_id|build_id). The stamp is derived HERE from the VENDOR_KEY secret (which
+      # MUST differ from LICENSE_SIGNING_KEY) + the release coordinates, so each release/client gets
+      # a distinct, reproducible fingerprint the vendor can attribute a leak with. For per-customer
+      # builds, drive LICENSE_ID/CLIENT_ID from a matrix; otherwise they default to the release.
+      - name: Generate per-release watermark stamp
+        env:
+          VENDOR_KEY: ${{ secrets.VENDOR_KEY }}
+          LICENSE_ID: ${{ secrets.RELEASE_LICENSE_ID }}
+          CLIENT_ID: ${{ secrets.RELEASE_CLIENT_ID }}
+          BUILD_ID: ${{ github.ref_name }}
+        run: |
+          if [ -z "${VENDOR_KEY}" ]; then
+            echo "::warning::VENDOR_KEY secret is not set - shipping an UNWATERMARKED image (no leak attribution)."
+            echo "RAG_BUILD_STAMP=" >> "$GITHUB_ENV"
+          else
+            STAMP="$(PYTHONPATH=packages python - <<'PY'
+          import os
+          from rag_core.watermark.build_stamp import BuildStamp
+
+          stamp = BuildStamp.create(
+              vendor_key=os.environ["VENDOR_KEY"],
+              license_id=os.environ.get("LICENSE_ID") or "release",
+              client_id=os.environ.get("CLIENT_ID") or os.environ["GITHUB_REPOSITORY"],
+              build_id=os.environ["BUILD_ID"],
+          )
+          print(stamp.to_json())
+          PY
+          )"
+            echo "RAG_BUILD_STAMP=${STAMP}" >> "$GITHUB_ENV"
+            echo "Generated a per-release watermark stamp for build_id=${BUILD_ID}."
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags/metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern=enterprise-v{{version}}
+            type=semver,pattern=enterprise-v{{major}}.{{minor}}
+            type=raw,value=enterprise-latest
+
+      # Build the image ONCE and LOAD it locally (do not push yet). We scan and then push THIS exact
+      # artifact - the base image is digest-pinned in the Dockerfile so the loaded tags are the ones
+      # published (fixes the "scan a different image than you push" gap, 🟠3).
+      - name: Build image (load, not pushed yet)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            RAG_BUILD_STAMP=${{ env.RAG_BUILD_STAMP }}
+
+      - name: Resolve primary image ref
+        id: primary
+        run: echo "ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:enterprise-latest" >> "$GITHUB_OUTPUT"
+
+      # In-image assertion that NO readable protected .py survived the compile (🟡7): extract the
+      # installed rag_core from the built image and run the strip-guard against it.
+      - name: Assert no readable protected sources in the image
+        run: |
+          cid="$(docker create ${{ steps.primary.outputs.ref }})"
+          rm -rf /tmp/rag_core
+          site="$(docker run --rm --entrypoint python ${{ steps.primary.outputs.ref }} -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+          docker cp "${cid}:${site}/rag_core" /tmp/rag_core
+          docker rm "${cid}"
+          python scripts/compile_core.py --assert-stripped /tmp/rag_core
+
+      # Smoke the exact built image (🟡6): the COMPILED core must import from inside the image
+      # (proves the .so artifacts are wired and load), plus the ASGI app object is importable. This
+      # needs no DB/LLM infra, so it is deterministic; full RAG behaviour is covered by the eval
+      # gate (ci.yml) and the box's own activation/smoke on deploy.
+      - name: Smoke-test the built image (compiled core imports)
+        run: |
+          docker run --rm --entrypoint python ${{ steps.primary.outputs.ref }} -c "import rag_core.retrieval.pipeline, rag_core.licensing.validator, rag_core.generation.prompt; print('compiled core imports OK')"
+          docker run --rm --entrypoint python ${{ steps.primary.outputs.ref }} -c "import importlib; importlib.import_module('services.api.widget_app'); print('widget app imports OK')"
+
+      # Supply-chain gate: Trivy fails the job on CRITICAL CVEs -> the release is blocked and the
+      # image is never pushed (core/eval_and_ops.md §4, IMPLEMENTATION_PLAN.md Stage M).
+      # NOTE: `ignore-unfixed: true` lets CRITICALs with no upstream fix through (otherwise every
+      # base-image CVE awaiting a patch would permanently block releases); drop it for a stricter
+      # gate once a base-image patch cadence is in place.
+      - name: Scan image for CVEs (Trivy, blocks on CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ steps.primary.outputs.ref }}
+          format: table
+          exit-code: "1"
+          severity: CRITICAL
+          ignore-unfixed: true
+
+      # Generate the SBOM (CycloneDX) for the released image and attach it to the release.
+      - name: Generate SBOM (CycloneDX via Syft)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.primary.outputs.ref }}
+          format: cyclonedx-json
+          output-file: sbom.cyclonedx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.cyclonedx.json
+
+      # Only now - after a green scan - push the SAME locally-built tags to GHCR. We push the images
+      # already LOADED above (no second `docker build`), so the pushed digest == the scanned digest.
+      - name: Push the scanned image to GHCR
+        run: |
+          echo "${DOCKER_METADATA_OUTPUT_TAGS}" | while read -r tag; do
+            [ -n "${tag}" ] && docker push "${tag}"
+          done
+
+      - name: Publish GitHub Release with the SBOM attached
+        uses: softprops/action-gh-release@v2
+        with:
+          files: sbom.cyclonedx.json
+          generate_release_notes: true

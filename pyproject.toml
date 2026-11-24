@@ -69,6 +69,13 @@ eval = [
     "ragas>=0.2,<0.3",
     "datasets>=2.0",
 ]
+# Stage M (Protected Box distribution, core/licensing_and_distribution.md §2 / core/eval_and_ops.md §4).
+# The release CI compiles the protected core (rag_core/licensing + rag_core/retrieval) into native
+# .so via Cython inside the Docker builder stage (scripts/compile_core.py --build). Declared as a
+# dedicated extra so the compile toolchain is NOT pulled into the lean runtime/test environment.
+box-build = [
+    "Cython>=3.0",
+]
 dev = [
     "ruff>=0.6",
     "mypy>=1.11",
@@ -185,7 +192,7 @@ plugins = ["pydantic.mypy"]
 disable_error_code = ["type-abstract"]
 # The core, the transport layer and the tests are typed (cf. core/eval_and_ops.md §4 -
 # the target `mypy services/ packages/`).
-files = ["tests", "packages", "services"]
+files = ["tests", "packages", "services", "scripts"]
 
 # Stage D (core/architecture.md §3): the ingestion providers depend on heavy, optional runtime
 # libraries (Docling, FlagEmbedding, boto3, taskiq-pg) that are imported LAZILY and ship no type
@@ -205,6 +212,10 @@ module = [
     # Stage J: ragas is the optional `eval` extra, imported LAZILY in tests.eval_ragas.scoring
     # (the heuristic fallback runs without it).
     "ragas.*",
+    # Stage M: the `box-build` extra (Cython) and setuptools build internals ship no stubs and are
+    # imported ONLY inside scripts/compile_core.py's `--build` path (absent in the type/test env).
+    "Cython.*",
+    "setuptools.*",
 ]
 ignore_missing_imports = true
 

@@ -1,0 +1,58 @@
+# Build-context hygiene for the protected Box image (IMPLEMENTATION_PLAN.md Stage M).
+# Keeps secrets, caches and the frontend toolchain OUT of the image layers (smaller attack
+# surface + no accidental leak of .env / git history into the shipped artifact).
+
+# Secrets & local env (NEVER ship into the client image).
+.env
+.env.*
+!.env.example
+
+# VCS & CI metadata.
+.git
+.github
+.gitignore
+
+# Python caches / build artifacts.
+__pycache__/
+*.py[cod]
+*.so
+*.c
+build/
+# Python sdist/wheel output lives at the repo ROOT only. A bare `dist/` (no leading slash) would
+# also exclude the prebuilt frontend `apps/admin/dist` that the Dockerfile COPYs - the release
+# workflow builds it just before `docker build` (Stage-M review 🔴2). Anchor it to the root.
+/dist/
+*.egg-info/
+.eggs/
+
+# Tooling caches.
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Tests, docs and internal drafts are not part of the runtime artifact.
+tests/
+core/
+deepseek-criticism.md
+IMPLEMENTATION_PLAN.md
+SPECIFICATION.md
+CONTRIBUTING.md
+
+# Frontend toolchain (only the prebuilt apps/admin/dist is copied explicitly in the Dockerfile).
+node_modules/
+apps/admin/node_modules/
+apps/admin/src/
+apps/widget/
+pnpm-lock.yaml
+pnpm-workspace.yaml
+
+# Local data / documents.
+data/
+documents/
+
+# IDE.
+.idea/
+.vscode/
+.DS_Store
