@@ -135,7 +135,7 @@ def _assert_stripped(install_root: Path) -> int:
 
     Run against the INSTALLED ``rag_core`` dir inside the image (Dockerfile builder) and by the
     static release test against a simulated tree. This is the machine-checkable form of the plan's
-    "нет исходников в образе" guarantee (🔴 / 🟡 of the Stage-M review): compilation that
+    "no sources in the image" guarantee (red/yellow of the Stage-M review): compilation that
     silently leaves the .py behind is worse than none (false sense of protection).
     """
     if not install_root.is_dir():
