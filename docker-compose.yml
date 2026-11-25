@@ -1,0 +1,113 @@
+# Local replica of the Enterprise RAG runtime (IMPLEMENTATION_PLAN.md §3.1 Variant B,
+# core/eval_and_ops.md §3.2). One codebase, two contours:
+#   - admin-api  -> private operator contour (binds 127.0.0.1 inside the container, reachable
+#                   from the host ONLY via an SSH tunnel / reverse proxy).
+#   - widget-api -> public, anonymous contour (0.0.0.0, ready for `--scale widget-api=N`).
+#
+# Bring up:
+#   cp .env.example .env   # then fill in at least POSTGRES_DSN / POSTGRES_APP_DSN / JWT_SECRET
+#   docker compose up -d
+#
+# Migrations: the admin-api service sets RUN_MIGRATIONS=1, so `alembic upgrade head` runs on
+# start. Before the migration the entrypoint takes a pg_dump of the current DB into the `backups`
+# volume (storage_schema.md §5 item 3, eval_and_ops.md §3.3) and aborts if the dump fails.
+# On the On-Premise Box the admin panel is reachable ONLY via an SSH tunnel (IMPLEMENTATION_PLAN.md
+# §3.8); the worker/telegram services below require the `ingestion` / `channels` extras, which the
+# protected Box image does not ship by default (they are the reference local-dev bindings).
+
+services:
+  admin-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Serves the Admin SPA static files + the /api/v1/admin/* routers.
+    # In On-Premise Box it listens strictly on 127.0.0.1 (SSH tunnel / reverse proxy only).
+    command: uvicorn services.api.admin_app:app --host 127.0.0.1 --port 8001
+    environment:
+      RUN_MIGRATIONS: "1"      # apply additive-only migrations on start (entrypoint)
+      BACKUP_DIR: /app/backups # mount for the pre-upgrade pg_dump hook
+    env_file: .env
+    ports:
+      - "127.0.0.1:8001:8001"  # bind to host loopback - SSH tunnel only, never public
+    volumes:
+      - backups:/app/backups
+    restart: unless-stopped
+    depends_on:
+      postgres-pgvector:
+        condition: service_healthy
+
+  widget-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # The public, anonymous, high-load contour - a separate --app, ready for horizontal
+    # scaling (docker compose up --scale widget-api=N).
+    command: uvicorn services.api.widget_app:app --host 0.0.0.0 --port 8002
+    env_file: .env
+    ports:
+      - "8002:8002"
+    restart: unless-stopped
+    depends_on:
+      postgres-pgvector:
+        condition: service_healthy
+
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m services.api.channels.telegram_bot
+    env_file: .env
+    restart: unless-stopped
+    depends_on:
+      postgres-pgvector:
+        condition: service_healthy
+
+  ingestion-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Durable Taskiq+Postgres worker; `broker` is built in services/ingestion_worker/app.py
+    # (requires the `ingestion` extra - taskiq-pg, Docling, FlagEmbedding, boto3).
+    command: taskiq worker services.ingestion_worker.app:broker
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    depends_on:
+      postgres-pgvector:
+        condition: service_healthy
+
+  postgres-pgvector:
+    image: pgvector/pgvector:pg15
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # Observability: self-hosted Langfuse (core/eval_and_ops.md §2). The FULL Langfuse stack
+  # (web + worker + postgres + clickhouse + redis + s3/minio) is deployed with the official
+  # compose (langfuse/langfuse); this service is the reference binding to the shared network.
+  # In Box it listens on 127.0.0.1 only.
+  langfuse:
+    image: langfuse/langfuse:latest
+    environment:
+      AUTH_DISABLE_SIGNUP: "true"   # self-signup disabled - access is granted by the vendor
+      NEXTAUTH_URL: http://localhost:3000
+    env_file: .env                  # DATABASE_URL, CLICKHOUSE_URL, REDIS_URL, SALT, ENCRYPTION_KEY, LANGFUSE_*
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  backups:

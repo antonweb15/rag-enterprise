@@ -71,6 +71,17 @@ LABEL org.opencontainers.image.title="rag-core" \
 # Run as an unprivileged user (never root in the client's contour).
 RUN groupadd --system rag && useradd --system --gid rag --home-dir ${APP_HOME} rag
 
+# pg_dump for the mandatory pre-upgrade backup hook (storage_schema.md §5 item 3,
+# eval_and_ops.md §3.3): the entrypoint refuses to run migrations without a successful
+# dump of the current DB, so the client's Postgres is always recoverable before an update.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# The backup hook writes into a mounted volume as the non-root `rag` user; create the
+# mountpoint up-front (and chown it) so a fresh named volume inherits a writable directory.
+RUN mkdir -p /app/backups && chown rag:rag /app/backups
+
 WORKDIR ${APP_HOME}
 
 # Copy the installed site-packages (compiled core + deps) and the open transport layer.

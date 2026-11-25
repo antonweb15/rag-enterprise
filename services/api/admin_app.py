@@ -1122,3 +1122,9 @@ class AdminAPIApp:
         )
         await send({"type": "http.response.start", "status": status, "headers": hdrs})
         await send({"type": "http.response.body", "body": body})
+
+
+# The module-level ASGI instance for `uvicorn services.api.admin_app:app`
+# (core/eval_and_ops.md §3.2): the private Admin contour runs on 127.0.0.1:8001,
+# mirroring the widget contour's `app = WidgetAPIApp()`.
+app = AdminAPIApp()

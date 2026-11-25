@@ -84,6 +84,23 @@ def test_dockerfile_has_migration_entrypoint() -> None:
     assert "/app/migrations" in entry
 
 
+def test_entrypoint_backs_up_db_before_migrations() -> None:
+    """Pre-upgrade hook: a pg_dump runs BEFORE alembic, and the upgrade aborts if it cannot."""
+    entry = (PROJECT_ROOT / "scripts" / "docker-entrypoint.sh").read_text(encoding="utf-8")
+    assert "pg_dump" in entry
+    assert "BACKUP_DIR" in entry
+    # The SQLAlchemy DSN (postgresql+psycopg://) is normalized to a libpq URI for pg_dump.
+    assert "postgresql+psycopg://" in entry
+    # The dump must happen BEFORE the migration is applied.
+    assert entry.index("pg_dump") < entry.index("upgrade head")
+
+
+def test_dockerfile_ships_pg_dump_for_backup_hook() -> None:
+    """The runtime stage installs postgresql-client so the pg_dump hook can actually run."""
+    src = _read(DOCKERFILE)
+    assert "postgresql-client" in src
+
+
 def test_dockerfile_runs_nonroot_with_healthcheck() -> None:
     """Supply-chain hardening: non-root USER + a HEALTHCHECK are present (Stage M)."""
     src = _read(DOCKERFILE)
