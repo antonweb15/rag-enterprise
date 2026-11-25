@@ -24,6 +24,18 @@ from tests.integration._docker import docker_available, in_ci
 APP_USER_PASSWORD = "app_user_test_pw"  # noqa: S105 - test password for the container only
 
 
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Auto-tag everything under tests/integration/ with the `integration` marker.
+
+    This lets CI run the security/RLS contract gate as a dedicated, explicit blocking step
+    (`pytest -m integration`) separate from the unit suite (`pytest -m "not integration"`),
+    without having to repeat `pytestmark` in every integration module.
+    """
+    for item in items:
+        if "tests/integration/" in item.nodeid or "tests\\integration\\" in item.nodeid:
+            item.add_marker("integration")
+
+
 def _psycopg_url(container: object) -> str:
     """Builds a SQLAlchemy URL with the psycopg (v3) driver for the admin connection."""
     raw: str = cast(str, cast(Any, container).get_connection_url())

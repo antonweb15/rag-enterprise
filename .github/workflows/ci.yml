@@ -43,8 +43,18 @@ jobs:
       - name: Mypy (strict)
         run: mypy
 
-      - name: Pytest
-        run: pytest -q
+      # Unit / contract suite (everything except the Docker-backed integration gate below).
+      - name: Pytest (unit & contract suite)
+        run: pytest -q -m "not integration"
+
+      # Security contract gate (storage_schema.md §4, eval_and_ops.md §1.3) - CI-BLOCKING.
+      # These RLS/ACL isolation, fail-closed, cascade re-classification and BYPASSRLS-ban tests
+      # run against a REAL Postgres+pgvector started via testcontainers (Docker is preinstalled on
+      # GitHub-hosted runners). In CI they are NEVER silently skipped: a missing Docker daemon or
+      # testcontainers makes this step fail loudly (tests/integration/_docker.py:in_ci), so the
+      # mandatory security coverage genuinely blocks the merge.
+      - name: Security contract gate (RLS/ACL, Postgres+pgvector)
+        run: pytest -q -m integration
 
       # Stage J quality gate (IMPLEMENTATION_PLAN.md Stage J, core/eval_and_ops.md §1/§4).
       # The offline self-check always runs as a smoke of the gate plumbing (no infra needed) and
